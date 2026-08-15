@@ -68,6 +68,27 @@ Option Explicit
   Private Declare PtrSafe Function archive_read_close Lib "archiveint.dll" (ByVal hRead As LongPtr) As Long
   Private Declare PtrSafe Function archive_read_free Lib "archiveint.dll" (ByVal hRead As LongPtr) As Long
 
+  #If Win64 Then
+    ' Write side, used only to deflate vbaProject.bin when repackaging an OOXML
+    ' container. Declared for 64-bit alone: archive_entry_set_size and
+    ' archive_write_data take 64-bit integers, and getting that marshalling right
+    ' under 32-bit stdcall is not something this has been tested against. Off
+    ' 64-bit the entry is stored uncompressed instead, which is valid but larger.
+    Private Declare PtrSafe Function archive_write_new Lib "archiveint.dll" () As LongPtr
+    Private Declare PtrSafe Function archive_write_add_filter_gzip Lib "archiveint.dll" (ByVal hWrite As LongPtr) As Long
+    Private Declare PtrSafe Function archive_write_set_format_raw Lib "archiveint.dll" (ByVal hWrite As LongPtr) As Long
+    Private Declare PtrSafe Function archive_write_set_options Lib "archiveint.dll" (ByVal hWrite As LongPtr, ByVal opts As LongPtr) As Long
+    Private Declare PtrSafe Function archive_write_open_memory Lib "archiveint.dll" (ByVal hWrite As LongPtr, ByVal pBuffer As LongPtr, ByVal bufferSize As LongPtr, ByRef used As LongPtr) As Long
+    Private Declare PtrSafe Function archive_write_header Lib "archiveint.dll" (ByVal hWrite As LongPtr, ByVal hEntry As LongPtr) As Long
+    Private Declare PtrSafe Function archive_write_data Lib "archiveint.dll" (ByVal hWrite As LongPtr, ByVal pData As LongPtr, ByVal Size As LongPtr) As LongLong
+    Private Declare PtrSafe Function archive_write_close Lib "archiveint.dll" (ByVal hWrite As LongPtr) As Long
+    Private Declare PtrSafe Function archive_write_free Lib "archiveint.dll" (ByVal hWrite As LongPtr) As Long
+    Private Declare PtrSafe Function archive_entry_new Lib "archiveint.dll" () As LongPtr
+    Private Declare PtrSafe Function archive_entry_free Lib "archiveint.dll" (ByVal hEntry As LongPtr) As Long
+    Private Declare PtrSafe Sub archive_entry_set_size Lib "archiveint.dll" (ByVal hEntry As LongPtr, ByVal Size As LongLong)
+    Private Declare PtrSafe Sub archive_entry_set_filetype Lib "archiveint.dll" (ByVal hEntry As LongPtr, ByVal fileType As Long)
+  #End If
+
   Private Declare PtrSafe Function apiCreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As LongPtr, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As LongPtr, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As LongPtr) As LongPtr
   Private Declare PtrSafe Function apiWriteFile Lib "kernel32" Alias "WriteFile" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToWrite As Long, ByRef lpNumberOfBytesWritten As Long, ByVal lpOverlapped As LongPtr) As Long
   Private Declare PtrSafe Function apiReadFile Lib "kernel32" Alias "ReadFile" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToRead As Long, ByRef lpNumberOfBytesRead As Long, ByVal lpOverlapped As LongPtr) As Long
@@ -81,6 +102,7 @@ Option Explicit
   Private Declare PtrSafe Function StgOpenStorage Lib "ole32" (ByVal pwcsName As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ByRef ppstgOpen As stdole.IUnknown) As Long
   Private Declare PtrSafe Function CreateILockBytesOnHGlobal Lib "ole32" (ByVal hGlobal As LongPtr, ByVal fDeleteOnRelease As Long, ByRef ppLkbyt As stdole.IUnknown) As Long
   Private Declare PtrSafe Function StgOpenStorageOnILockBytes Lib "ole32" (ByVal pLkbyt As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ppstgOpen As stdole.IUnknown) As Long
+  Private Declare PtrSafe Function GetHGlobalFromILockBytes Lib "ole32" (ByVal pLkbyt As LongPtr, ByRef phglobal As LongPtr) As Long
   Private Declare PtrSafe Function ILCreateFromPathW Lib "shell32" (ByVal pszPath As LongPtr) As LongPtr
   Private Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
   Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
@@ -123,6 +145,7 @@ Option Explicit
   Private Declare Function StgOpenStorage Lib "ole32" (ByVal pwcsName As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ByRef ppstgOpen As stdole.IUnknown) As Long
   Private Declare Function CreateILockBytesOnHGlobal Lib "ole32" (ByVal hGlobal As LongPtr, ByVal fDeleteOnRelease As Long, ByRef ppLkbyt As stdole.IUnknown) As Long
   Private Declare Function StgOpenStorageOnILockBytes Lib "ole32" (ByVal pLkbyt As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ppstgOpen As stdole.IUnknown) As Long
+  Private Declare Function GetHGlobalFromILockBytes Lib "ole32" (ByVal pLkbyt As LongPtr, ByRef phglobal As LongPtr) As Long
 
   Private Declare Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
   Private Declare Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
@@ -201,6 +224,16 @@ Private Enum IStreamInterface
   IStm_Clone = 13
 End Enum
 
+Private Enum ILockBytesInterface
+  ILkb_ReadAt = 3
+  ILkb_WriteAt = 4
+  ILkb_Flush = 5
+  ILkb_SetSize = 6
+  ILkb_LockRegion = 7
+  ILkb_UnlockRegion = 8
+  ILkb_stat = 9
+End Enum
+
 Private Enum STGTY
   STGTY_STORAGE = 1
   STGTY_STREAM = 2
@@ -209,8 +242,11 @@ Private Enum STGTY
 End Enum
 
 Private Const STGM_READ                 As Long = &H0
+Private Const STGM_WRITE                As Long = &H1
+Private Const STGM_READWRITE            As Long = &H2
 Private Const STGM_SHARE_DENY_WRITE     As Long = &H20
 Private Const STGM_SHARE_EXCLUSIVE      As Long = &H10
+Private Const STATFLAG_NONAME           As Long = &H1
 Private Const CC_STDCALL                As Long = 4
 Private Const INVALID_FILE_ATTRIBUTES   As Long = -1
 Private Const FILE_ATTRIBUTE_DIRECTORY  As Long = &H10
@@ -231,6 +267,9 @@ Private Const PPT_VBA_PROJECT_STG       As Long = &H1011&
 Private Const MAX_EMBEDDED_PROJECT_SIZE As Long = 268435456  ' 256 Mb safety ceiling
 Private Const GZIP_HEADER_SIZE          As Long = 10
 Private Const GZIP_TRAILER_SIZE         As Long = 8
+Private Const AE_IFREG                  As Long = &H8000&
+Private Const ZIP_METHOD_STORE          As Long = 0
+Private Const ZIP_METHOD_DEFLATE        As Long = 8
 Private Const VBAXRAY_VERSION           As Single = 2#
 
 Private Const IID_IPersistFolder        As String = "{000214EA-0000-0000-C000-000000000046}"
@@ -252,6 +291,16 @@ Public Enum ModuleType
   modDocument
 End Enum
 
+' Where the loaded project came from, and therefore how it can be written back.
+Private Enum XraySourceKind
+  srcNone = 0
+  srcProjectBin = 1     ' a standalone vbaProject.bin
+  srcCompoundFile = 2   ' a legacy compound container (.xls, .doc, .pub, .otm)
+  srcOOXML = 3          ' vbaProject.bin lifted out of a zip container
+  srcAccess = 4         ' read-only: the compiled p-code, not the source, is authoritative
+  srcLegacyPPT = 5      ' read-only: writing legacy PowerPoint is out of scope here
+End Enum
+
 Private Type ModuleRecord
   Name        As String
   streamName  As String
@@ -259,6 +308,7 @@ Private Type ModuleRecord
   ModType     As ModuleType
   IsForm      As Boolean
   SourceCode  As String
+  IsDirty     As Boolean
 End Type
 
 Private Type ProjectRecord
@@ -282,6 +332,19 @@ Private m_LastError         As String
 Private m_LogLevel          As XrayLogLevel
 Private m_LastOperationTime As Double
 Private m_StartTimer        As Double
+
+' Write-path state. m_SourceBytes is the compound file that gets rewritten: the
+' whole container for a legacy compound file, or the extracted vbaProject.bin for
+' a zip container. m_ContainerPath is only set for OOXML, where the rebuilt bin
+' has to be put back into the archive it came from.
+Private m_SourceKind        As XraySourceKind
+Private m_SourceBytes()     As Byte
+Private m_SourceExt         As String
+Private m_ContainerPath     As String
+
+' CRC-32 table for the zip writer, built on first use.
+Private m_CrcTable()        As Long
+Private m_CrcReady          As Boolean
 
 Public Property Get Version() As Single
   Version = VBAXRAY_VERSION
@@ -371,18 +434,31 @@ Public Function LoadFromFile(ByVal FilePath As String) As Boolean
       SetError "[LoadFromFile] " & UCase$(ext) & " files have VBA source removed at compile time - only p-code remains. Source extraction is not possible."
     ElseIf ext = "accdb" Or ext = "accdt" Or ext = "accdr" Or ext = "mdb" Then
       LoadFromFile = LoadFromAccessDB(FilePath)
-      If LoadFromFile Then m_Project.FilePath = FilePath
+      If LoadFromFile Then
+        m_Project.FilePath = FilePath
+        m_SourceKind = srcAccess
+      End If
     ElseIf IsCompoundFile(FilePath) Then
       Select Case ext
       Case "ppt", "pps", "pot", "ppa"
         LoadFromFile = LoadFromLegacyPowerPoint(FilePath)
-        If LoadFromFile Then m_Project.FilePath = FilePath
+        If LoadFromFile Then
+          m_Project.FilePath = FilePath
+          m_SourceKind = srcLegacyPPT
+        End If
       Case Else
         Dim fileStorage As stdole.IUnknown
         Set fileStorage = StorageOpenFile(FilePath)
         LoadFromStorage fileStorage, ext
         LoadFromFile = IsLoaded
-        If LoadFromFile Then m_Project.FilePath = FilePath
+        If LoadFromFile Then
+          m_Project.FilePath = FilePath
+          ' Only the path is kept. The container bytes are read when saving, so
+          ' loading a large legacy file to read it costs nothing extra.
+          m_ContainerPath = FilePath
+          m_SourceExt = ext
+          m_SourceKind = srcCompoundFile
+        End If
       End Select
     Else
       Select Case ext
@@ -391,7 +467,13 @@ Public Function LoadFromFile(ByVal FilePath As String) As Boolean
         vbaBytes = GetVBAProjectBinBytes(FilePath)
         If ByteCount(vbaBytes) > 0 Then
           LoadFromFile = LoadFromByteArray(vbaBytes)
-          If LoadFromFile Then m_Project.FilePath = FilePath
+          If LoadFromFile Then
+            m_Project.FilePath = FilePath
+            ' LoadFromByteArray recorded srcProjectBin; the bin actually came out
+            ' of a zip, so saving has to put it back.
+            m_ContainerPath = FilePath
+            m_SourceKind = srcOOXML
+          End If
         End If
       Case Else
         SetError "[LoadFromFile] Unrecognised file type '." & ext & "'"
@@ -415,6 +497,12 @@ Public Function LoadFromByteArray(ByRef VBAProjectBinData() As Byte) As Boolean
         If Not byteStorage Is Nothing Then
           LoadFromStorage byteStorage, "bin"
           LoadFromByteArray = IsLoaded
+          If LoadFromByteArray Then
+            ' Set after the load: LoadFromStorage calls Reset on entry.
+            m_SourceBytes = VBAProjectBinData
+            m_SourceExt = "bin"
+            m_SourceKind = srcProjectBin
+          End If
         End If
       Else
         SetError "[LoadFromByteArray] Data does not have a valid Compound Document signature"
@@ -430,6 +518,10 @@ Public Sub Reset()
   m_Project = EmptyProject
   m_Project.CodePage = 1252
   Set m_StorageTree = Nothing
+  m_SourceKind = srcNone
+  m_SourceExt = vbNullString
+  m_ContainerPath = vbNullString
+  Erase m_SourceBytes
 End Sub
 
 Public Sub ExportAll(ByVal ExportPath As String)
@@ -505,6 +597,841 @@ Public Function FullSourceCode(Optional ByVal Separator As String = vbCrLf & vbC
     parts(i) = Replace(Separator, "{0}", m_Project.Modules(i).Name) & m_Project.Modules(i).SourceCode
   Next i
   FullSourceCode = Join(parts, vbNullString)
+End Function
+
+' ---------------------------------------------------------------------------
+'  Writing
+'
+'  Replacing a module's source leaves the compiled p-code in that module's
+'  performance cache untouched, so the cache no longer agrees with the source.
+'  Excel, Word and PowerPoint notice the mismatch on open and recompile from
+'  source, which is what makes writing possible without a p-code assembler.
+'  Access does not recompile from the cache, which is why Access stays read-only.
+' ---------------------------------------------------------------------------
+
+' True when the loaded project came from a container this class can write back.
+Public Property Get CanWrite() As Boolean
+  Select Case m_SourceKind
+    Case srcProjectBin, srcCompoundFile, srcOOXML: CanWrite = True
+  End Select
+End Property
+
+' True when any module's source has been replaced since the project was loaded.
+Public Property Get IsModified() As Boolean
+  Dim i As Long
+  For i = 1 To m_Project.ModuleCount
+    If m_Project.Modules(i).IsDirty Then
+      IsModified = True
+      Exit Property
+    End If
+  Next i
+End Property
+
+' Replace one module's source. Nothing is written until Save or SaveAs.
+'
+' Line endings are normalised to CRLF, which is what a module stream stores. A
+' class source may be supplied either as a bare body or as a .cls exported by
+' ExportModule: the "VERSION 1.0 CLASS" preamble that export adds is not part of
+' the stream and is stripped back off here. The Attribute lines are part of the
+' stream and are kept.
+Public Function SetModuleSource(ByVal index As Long, ByVal SourceCode As String) As Boolean
+  ClearError
+
+  If Not IsLoaded Then
+    SetError "[SetModuleSource] No project is loaded"
+    Exit Function
+  End If
+  If index < 1 Or index > m_Project.ModuleCount Then
+    SetError "[SetModuleSource] Module index " & index & " is out of range (1 to " & m_Project.ModuleCount & ")"
+    Exit Function
+  End If
+  If Not CanWrite Then
+    SetError "[SetModuleSource] " & WriteBlockedReason()
+    Exit Function
+  End If
+
+  With m_Project.Modules(index)
+    If .ModType = modDesigner Then
+      LogMessage xrayWarning, "[SetModuleSource] '" & .Name & "' is a designer module. " & _
+                              "Its code-behind is replaced; the form's binary FRX data is left as it is."
+    End If
+    .SourceCode = StripClassPreamble(NormaliseLineEndings(SourceCode))
+    .IsDirty = True
+  End With
+
+  SetModuleSource = True
+End Function
+
+Public Function SetModuleSourceByName(ByVal modName As String, ByVal SourceCode As String) As Boolean
+  Dim i As Long
+  ClearError
+  For i = 1 To m_Project.ModuleCount
+    If LCase$(m_Project.Modules(i).Name) = LCase$(modName) Then
+      SetModuleSourceByName = SetModuleSource(i, SourceCode)
+      Exit Function
+    End If
+  Next i
+  SetError "[SetModuleSourceByName] No module named '" & modName & "'"
+End Function
+
+' Write the project, with every replaced module in place, to OutputPath.
+'
+' Edits are applied to the container as it was loaded, every time, so saving to
+' several paths in turn produces the same result each time and IsModified keeps
+' reporting how the project differs from what was loaded.
+'
+' A password-locked project needs AllowProtected. The lock bytes are carried
+' over untouched, but rewriting the source of a project someone deliberately
+' locked is worth being explicit about. A digitally signed project has its
+' signature streams dropped, because any change to the modules invalidates it
+' and a signature that no longer verifies is worse than none; pass
+' AllowInvalidateSignature to accept that without the warning.
+Public Function SaveAs(ByVal OutputPath As String, _
+                       Optional ByVal AllowProtected As Boolean = False, _
+                       Optional ByVal AllowInvalidateSignature As Boolean = False) As Boolean
+  Dim sourceCFB() As Byte
+  Dim rebuilt()   As Byte
+
+  On Error GoTo Failed
+  ClearError
+  m_StartTimer = Timer
+
+  If Not IsLoaded Then
+    SetError "[SaveAs] No project is loaded"
+    GoTo Done
+  End If
+  If Not CanWrite Then
+    SetError "[SaveAs] " & WriteBlockedReason()
+    GoTo Done
+  End If
+  If Len(VBA.Trim$(OutputPath)) = 0 Then
+    SetError "[SaveAs] No output path given"
+    GoTo Done
+  End If
+  If m_Project.IsPasswordProtected And Not AllowProtected Then
+    SetError "[SaveAs] The VBA project is password-protected. Its lock bytes are " & _
+             "preserved as they are, so the result still needs the original password. " & _
+             "Pass AllowProtected:=True to confirm that is intended."
+    GoTo Done
+  End If
+
+  ' Outlook keeps its macros in one store, VbaProject.OTM, which it holds open
+  ' while running and writes back out when it closes. An edit made underneath a
+  ' running Outlook is overwritten on exit.
+  If LCase$(m_SourceExt) = "otm" Then
+    LogMessage xrayWarning, "Outlook keeps VbaProject.OTM open while it runs and rewrites " & _
+                            "it on exit. Close Outlook before writing, or the change will be lost."
+  End If
+
+  sourceCFB = GetWritableCFB()
+  If ByteCount(sourceCFB) = 0 Then GoTo Done
+
+  rebuilt = RewriteCFB(sourceCFB, m_SourceExt, AllowInvalidateSignature)
+  If ByteCount(rebuilt) = 0 Then GoTo Done
+
+  If m_SourceKind = srcOOXML Then
+    If Not RepackageOOXML(m_ContainerPath, OutputPath, rebuilt) Then GoTo Done
+  Else
+    If Not WriteFile(OutputPath, rebuilt) Then
+      SetError "[SaveAs] Could not write " & OutputPath
+      GoTo Done
+    End If
+  End If
+
+  SaveAs = True
+  LogMessage xrayInfo, "Saved: " & OutputPath
+
+Done:
+  m_LastOperationTime = Timer - m_StartTimer
+  Exit Function
+
+Failed:
+  ' Nothing has been written at this point unless WriteFile itself failed, so the
+  ' original file is intact either way.
+  SaveAs = False
+  SetError "[SaveAs] Error " & Err.Number & " - " & Err.Description
+  Resume Done
+End Function
+
+' Write back over the file the project was loaded from.
+Public Function Save(Optional ByVal AllowProtected As Boolean = False, _
+                     Optional ByVal AllowInvalidateSignature As Boolean = False) As Boolean
+  Dim target As String
+  ClearError
+
+  Select Case m_SourceKind
+    Case srcOOXML, srcCompoundFile: target = m_ContainerPath
+    Case srcProjectBin:             target = m_Project.FilePath
+  End Select
+
+  If Len(target) = 0 Then
+    SetError "[Save] This project was loaded from memory and has no path of its own; use SaveAs"
+    Exit Function
+  End If
+
+  Save = SaveAs(target, AllowProtected, AllowInvalidateSignature)
+End Function
+
+Private Function WriteBlockedReason() As String
+  Select Case m_SourceKind
+    Case srcNone
+      WriteBlockedReason = "No project is loaded"
+    Case srcAccess
+      WriteBlockedReason = "Access stores compiled p-code separately from the source cache and " & _
+                           "never recompiles from it, so edits to the source would not survive a reload"
+    Case srcLegacyPPT
+      WriteBlockedReason = "Writing legacy PowerPoint files is not supported"
+    Case Else
+      WriteBlockedReason = "This project cannot be written back"
+  End Select
+End Function
+
+' The compound file the write path rewrites: the extracted vbaProject.bin for a
+' zip container, or the container itself for a legacy compound file. Loading a
+' legacy container keeps only its path, so its bytes are re-read here.
+Private Function GetWritableCFB() As Byte()
+  Select Case m_SourceKind
+    Case srcProjectBin, srcOOXML
+      GetWritableCFB = m_SourceBytes
+      If ByteCount(GetWritableCFB) = 0 Then
+        SetError "[GetWritableCFB] The loaded project has no retained source bytes"
+      End If
+    Case srcCompoundFile
+      GetWritableCFB = ReadFile(m_ContainerPath)
+      If ByteCount(GetWritableCFB) = 0 Then
+        SetError "[GetWritableCFB] Could not re-read " & m_ContainerPath
+      End If
+  End Select
+End Function
+
+' Rebuild a compound file with every modified module's source replaced.
+Private Function RewriteCFB(ByRef cfbBytes() As Byte, ByVal ext As String, _
+                            ByVal AllowInvalidateSignature As Boolean) As Byte()
+  Dim lockBytes As stdole.IUnknown
+  Dim rootStg   As stdole.IUnknown
+  Dim vbaStg    As stdole.IUnknown
+  Dim keepAlive As New Collection
+  Dim layout    As CFBLayout
+  Dim i         As Long
+  Dim rewritten As Long
+
+  Set rootStg = StorageOpenBytesCore(cfbBytes, STGM_READWRITE, lockBytes)
+  If rootStg Is Nothing Then Exit Function
+
+  layout = GetCFBLayout(ext)
+  Set vbaStg = StorageNavigate(rootStg, layout.VBAPath, keepAlive, True)
+  If vbaStg Is Nothing Then
+    SetError "[RewriteCFB] VBA storage not found at '" & layout.VBAPath & "' for writing"
+    Exit Function
+  End If
+
+  For i = 1 To m_Project.ModuleCount
+    If m_Project.Modules(i).IsDirty Then
+      If Not RewriteModuleStream(vbaStg, i) Then Exit Function
+      rewritten = rewritten + 1
+    End If
+  Next i
+
+  If rewritten > 0 Then DropSignatureStreams rootStg, vbaStg, AllowInvalidateSignature
+
+  ' Commit inward-out: the module streams were committed as they were written,
+  ' then the VBA storage, then the root.
+  If Not StorageCommit(vbaStg) Then Exit Function
+  Set vbaStg = Nothing
+  Set keepAlive = Nothing
+  If Not StorageCommit(rootStg) Then Exit Function
+  Set rootStg = Nothing
+
+  RewriteCFB = LockBytesToArray(lockBytes)
+  LogMessage xrayInfo, "Rebuilt project with " & rewritten & " rewritten module stream(s)"
+End Function
+
+' Replace the compressed source in one module stream, keeping the performance
+' cache that precedes it. MODULEOFFSET does not move, so the dir stream needs no
+' change for a source-only edit.
+Private Function RewriteModuleStream(ByRef vbaStg As stdole.IUnknown, ByVal index As Long) As Boolean
+  Dim pStm         As stdole.IUnknown
+  Dim modBytes()   As Byte
+  Dim sourceBytes() As Byte
+  Dim compressed() As Byte
+  Dim newStream()  As Byte
+  Dim prefixLen    As Long
+  Dim compLen      As Long
+
+  With m_Project.Modules(index)
+    Set pStm = StorageOpenStreamRW(vbaStg, .streamName)
+    If pStm Is Nothing Then
+      SetError "[RewriteModuleStream] Could not open stream '" & .streamName & "' for writing"
+      Exit Function
+    End If
+
+    modBytes = StreamReadBytes(pStm)
+    If ByteCount(modBytes) = 0 Then
+      SetError "[RewriteModuleStream] Stream '" & .streamName & "' is empty"
+      Exit Function
+    End If
+    If .offset > UBound(modBytes) Then
+      SetError "[RewriteModuleStream] Offset (" & .offset & ") exceeds stream length for module " & .Name
+      Exit Function
+    End If
+
+    prefixLen = .offset
+    sourceBytes = StringToBytes(.SourceCode, m_Project.CodePage)
+    compressed = CompressStream(sourceBytes)
+    compLen = ByteCount(compressed)
+    If compLen = 0 Then Exit Function
+
+    ReDim newStream(0 To prefixLen + compLen - 1)
+    If prefixLen > 0 Then
+      CopyMemory VarPtr(newStream(0)), VarPtr(modBytes(LBound(modBytes))), prefixLen
+    End If
+    CopyMemory VarPtr(newStream(prefixLen)), VarPtr(compressed(LBound(compressed))), compLen
+
+    If Not StreamWriteBytes(pStm, newStream) Then Exit Function
+    LogMessage xrayInfo, "[Rewrote] " & .Name & " - " & Len(.SourceCode) & _
+                         " chars into " & compLen & " compressed bytes"
+  End With
+
+  RewriteModuleStream = True
+End Function
+
+' A digital signature covers the modules, so any edit invalidates it. Leaving a
+' signature that no longer verifies behind is worse than leaving none, so the
+' stale streams go. They sit either inside the VBA storage or beside it at the
+' root depending on how the project was signed, so both are tried.
+Private Sub DropSignatureStreams(ByRef rootStg As stdole.IUnknown, ByRef vbaStg As stdole.IUnknown, _
+                                 ByVal Silent As Boolean)
+  Dim names   As Variant
+  Dim i       As Long
+  Dim dropped As Long
+
+  names = Array("_VBA_PROJECT_SIGNATURE", "_VBA_PROJECT_SIGNATURE_AGILE", "_VBA_PROJECT_SIGNATURE_V3")
+
+  For i = LBound(names) To UBound(names)
+    If DestroyElement(vbaStg, CStr(names(i))) Then dropped = dropped + 1
+    If DestroyElement(rootStg, CStr(names(i))) Then dropped = dropped + 1
+  Next i
+
+  If dropped > 0 And Not Silent Then
+    LogMessage xrayWarning, "Dropped " & dropped & " stale digital signature stream(s). " & _
+                            "The project was modified, so the signature no longer verifies. " & _
+                            "Re-sign the file to restore trust."
+  End If
+End Sub
+
+' False when the element was not there, which is the common case and not an error.
+Private Function DestroyElement(ByRef pStg As stdole.IUnknown, ByVal Name As String) As Boolean
+  If pStg Is Nothing Then Exit Function
+  DestroyElement = (DispCallByVtbl(pStg, IStorageInterface.IStg_DestroyElement, StrPtr(Name)) >= 0)
+End Function
+
+' Module streams store CRLF. Bare LF, from a file written on another platform or
+' a here-doc in a script, is converted on the way in, because the VBE treats a
+' lone LF as part of the line and the whole module ends up on one line.
+Private Function NormaliseLineEndings(ByVal s As String) As String
+  NormaliseLineEndings = Replace(Replace(Replace(s, vbCrLf, vbLf), vbCr, vbLf), vbLf, vbCrLf)
+End Function
+
+' Drop the "VERSION 1.0 CLASS / BEGIN ... END" block that ExportModule writes
+' ahead of a class module. It is a VBE import convention, not part of the stream.
+Private Function StripClassPreamble(ByVal s As String) As String
+  Dim beginPos As Long
+  Dim endPos   As Long
+  Const END_MARKER As String = vbCrLf & "END" & vbCrLf
+
+  StripClassPreamble = s
+  If UCase$(Left$(LTrim$(s), 8)) <> "VERSION " Then Exit Function
+
+  beginPos = InStr(1, s, vbCrLf & "BEGIN", vbTextCompare)
+  If beginPos = 0 Then Exit Function
+  endPos = InStr(beginPos, s, END_MARKER, vbTextCompare)
+  If endPos = 0 Then Exit Function
+
+  StripClassPreamble = Mid$(s, endPos + Len(END_MARKER))
+  ' ExportModule leaves a blank line after the preamble.
+  If Left$(StripClassPreamble, 2) = vbCrLf Then StripClassPreamble = Mid$(StripClassPreamble, 3)
+End Function
+
+' Put a rebuilt vbaProject.bin back into the OOXML package it came from.
+'
+' Every other entry is copied across with its compressed bytes exactly as Office
+' wrote them: the method, CRC and sizes come straight from the original central
+' directory and the payload is moved verbatim. Nothing is inflated and nothing is
+' deflated, so no compressor is needed and the rest of the package is unchanged
+' byte for byte. Only the replaced entry is rewritten, and it is stored rather
+' than deflated, which the format permits and Office reads.
+'
+' The read path mounts the package through ZipFldr as an IStorage. That route is
+' not used here: rebuilding an archive needs the raw records, not a shell view of
+' them. See GetVBAProjectBinBytes for the read side.
+Private Function RepackageOOXML(ByVal ContainerPath As String, ByVal OutputPath As String, _
+                                ByRef newBin() As Byte) As Boolean
+  Dim zipBytes()  As Byte
+  Dim outBytes()  As Byte
+  Dim eocd        As Long
+  Dim entryCount  As Long
+  Dim dirStart    As Long
+  Dim at          As Long
+  Dim i           As Long
+
+  Dim names()     As Long   ' offset of each entry's name bytes within zipBytes
+  Dim nameLens()  As Long
+  Dim flags()     As Long
+  Dim methods()   As Long
+  Dim dosTimes()  As Long
+  Dim dosDates()  As Long
+  Dim crcs()      As Long
+  Dim compSizes() As Long
+  Dim rawSizes()  As Long
+  Dim dataAt()    As Long
+  Dim replaceIdx  As Long
+
+  Dim outPos      As Long
+  Dim dirOutStart As Long
+  Dim localAt()   As Long
+  Dim total       As Long
+  Dim newLen      As Long
+
+  Dim repPayload() As Byte    ' the replacement entry as it will be stored
+  Dim repMethod    As Long
+  Dim repCompLen   As Long
+  Dim repCrc       As Long    ' always over the uncompressed bytes
+
+  zipBytes = ReadFile(ContainerPath)
+  If ByteCount(zipBytes) = 0 Then
+    SetError "[RepackageOOXML] Could not read " & ContainerPath
+    Exit Function
+  End If
+
+  eocd = FindEndOfCentralDirectory(zipBytes)
+  If eocd < 0 Then
+    SetError "[RepackageOOXML] No end-of-central-directory record in " & ContainerPath
+    Exit Function
+  End If
+  If ReadUInt16LE(zipBytes, eocd + 4) <> 0 Or ReadUInt16LE(zipBytes, eocd + 6) <> 0 Then
+    SetError "[RepackageOOXML] Multi-disk archives are not supported"
+    Exit Function
+  End If
+
+  entryCount = ReadUInt16LE(zipBytes, eocd + 10)
+  If entryCount = 65535 Then
+    SetError "[RepackageOOXML] Zip64 archives are not supported"
+    Exit Function
+  End If
+  If entryCount = 0 Then
+    SetError "[RepackageOOXML] Archive contains no entries"
+    Exit Function
+  End If
+
+  ReDim names(1 To entryCount):     ReDim nameLens(1 To entryCount)
+  ReDim flags(1 To entryCount):     ReDim methods(1 To entryCount)
+  ReDim dosTimes(1 To entryCount):  ReDim dosDates(1 To entryCount)
+  ReDim crcs(1 To entryCount):      ReDim compSizes(1 To entryCount)
+  ReDim rawSizes(1 To entryCount):  ReDim dataAt(1 To entryCount)
+  ReDim localAt(1 To entryCount)
+
+  at = UInt32ToLong(zipBytes, eocd + 16)
+  If at < 0 Then
+    SetError "[RepackageOOXML] Central directory offset is out of range"
+    Exit Function
+  End If
+
+  ' Deflate the replacement if libarchive will; otherwise store it. A stored
+  ' entry is valid and Office reads it, but vbaProject.bin is the bulk of a
+  ' macro-enabled file and storing it roughly doubles the package.
+  newLen = ByteCount(newBin)
+  repCrc = Crc32(newBin)
+
+  If TryDeflateRaw(newBin, repPayload) Then
+    repMethod = ZIP_METHOD_DEFLATE
+    repCompLen = ByteCount(repPayload)
+  End If
+
+  ' No deflate available, or one that did not pay for itself.
+  If repMethod <> ZIP_METHOD_DEFLATE Or repCompLen >= newLen Then
+    repMethod = ZIP_METHOD_STORE
+    repPayload = newBin
+    repCompLen = newLen
+  End If
+
+  For i = 1 To entryCount
+    If at + 46 > UBound(zipBytes) Then
+      SetError "[RepackageOOXML] Central directory is truncated at entry " & i
+      Exit Function
+    End If
+    If UInt32ToLong(zipBytes, at) <> &H2014B50 Then
+      SetError "[RepackageOOXML] Central directory record " & i & " has a bad signature"
+      Exit Function
+    End If
+
+    flags(i) = ReadUInt16LE(zipBytes, at + 8)
+    If (flags(i) And 1) <> 0 Then
+      SetError "[RepackageOOXML] Encrypted entries are not supported"
+      Exit Function
+    End If
+
+    methods(i) = ReadUInt16LE(zipBytes, at + 10)
+    dosTimes(i) = ReadUInt16LE(zipBytes, at + 12)
+    dosDates(i) = ReadUInt16LE(zipBytes, at + 14)
+    crcs(i) = UInt32ToRaw(zipBytes, at + 16)
+    compSizes(i) = UInt32ToLong(zipBytes, at + 20)
+    rawSizes(i) = UInt32ToLong(zipBytes, at + 24)
+    nameLens(i) = ReadUInt16LE(zipBytes, at + 28)
+    names(i) = at + 46
+    localAt(i) = UInt32ToLong(zipBytes, at + 42)
+
+    If compSizes(i) < 0 Or rawSizes(i) < 0 Or localAt(i) < 0 Then
+      SetError "[RepackageOOXML] Entry " & i & " needs Zip64, which is not supported"
+      Exit Function
+    End If
+
+    dataAt(i) = LocalEntryDataStart(zipBytes, localAt(i))
+    If dataAt(i) < 0 Then
+      SetError "[RepackageOOXML] Local header for entry " & i & " is not where the directory says"
+      Exit Function
+    End If
+    If dataAt(i) + compSizes(i) - 1 > UBound(zipBytes) Then
+      SetError "[RepackageOOXML] Entry " & i & " runs past the end of the archive"
+      Exit Function
+    End If
+
+    If replaceIdx = 0 Then
+      If EntryNameIsVBAProject(zipBytes, names(i), nameLens(i)) Then replaceIdx = i
+    End If
+
+    ' A local header without its sizes (bit 3) puts them in a trailing data
+    ' descriptor. The rebuilt headers carry real sizes, so that flag is cleared.
+    total = total + 30 + nameLens(i) + 46 + nameLens(i)
+    If i = replaceIdx Then
+      total = total + repCompLen
+    Else
+      total = total + compSizes(i)
+    End If
+
+    at = at + 46 + nameLens(i) + ReadUInt16LE(zipBytes, at + 30) + ReadUInt16LE(zipBytes, at + 32)
+  Next i
+
+  If replaceIdx = 0 Then
+    SetError "[RepackageOOXML] No vbaProject.bin entry found in " & ContainerPath
+    Exit Function
+  End If
+
+  ReDim outBytes(0 To total + 22 - 1)
+
+  ' Local headers and payloads.
+  For i = 1 To entryCount
+    Dim thisFlags As Long
+    Dim thisCrc   As Long
+    Dim thisComp  As Long
+    Dim thisRaw   As Long
+
+    thisFlags = flags(i) And Not 8&
+    If i = replaceIdx Then
+      thisCrc = repCrc
+      thisComp = repCompLen
+      thisRaw = newLen
+    Else
+      thisCrc = crcs(i)
+      thisComp = compSizes(i)
+      thisRaw = rawSizes(i)
+    End If
+
+    localAt(i) = outPos                     ' reused: now the offset in the output
+    PutUInt32LE outBytes, outPos, &H4034B50
+    PutUInt16LE outBytes, outPos + 4, 20
+    PutUInt16LE outBytes, outPos + 6, thisFlags
+    PutUInt16LE outBytes, outPos + 8, IIf(i = replaceIdx, repMethod, methods(i))
+    PutUInt16LE outBytes, outPos + 10, dosTimes(i)
+    PutUInt16LE outBytes, outPos + 12, dosDates(i)
+    PutUInt32LE outBytes, outPos + 14, thisCrc
+    PutUInt32LE outBytes, outPos + 18, thisComp
+    PutUInt32LE outBytes, outPos + 22, thisRaw
+    PutUInt16LE outBytes, outPos + 26, nameLens(i)
+    PutUInt16LE outBytes, outPos + 28, 0        ' extra field dropped
+    outPos = outPos + 30
+
+    CopyMemory VarPtr(outBytes(outPos)), VarPtr(zipBytes(names(i))), nameLens(i)
+    outPos = outPos + nameLens(i)
+
+    If i = replaceIdx Then
+      If repCompLen > 0 Then
+        CopyMemory VarPtr(outBytes(outPos)), VarPtr(repPayload(LBound(repPayload))), repCompLen
+        outPos = outPos + repCompLen
+      End If
+    ElseIf compSizes(i) > 0 Then
+      CopyMemory VarPtr(outBytes(outPos)), VarPtr(zipBytes(dataAt(i))), compSizes(i)
+      outPos = outPos + compSizes(i)
+    End If
+  Next i
+
+  ' Central directory.
+  dirOutStart = outPos
+  For i = 1 To entryCount
+    PutUInt32LE outBytes, outPos, &H2014B50
+    PutUInt16LE outBytes, outPos + 4, 20
+    PutUInt16LE outBytes, outPos + 6, 20
+    PutUInt16LE outBytes, outPos + 8, flags(i) And Not 8&
+    PutUInt16LE outBytes, outPos + 10, IIf(i = replaceIdx, repMethod, methods(i))
+    PutUInt16LE outBytes, outPos + 12, dosTimes(i)
+    PutUInt16LE outBytes, outPos + 14, dosDates(i)
+    If i = replaceIdx Then
+      PutUInt32LE outBytes, outPos + 16, repCrc
+      PutUInt32LE outBytes, outPos + 20, repCompLen
+      PutUInt32LE outBytes, outPos + 24, newLen
+    Else
+      PutUInt32LE outBytes, outPos + 16, crcs(i)
+      PutUInt32LE outBytes, outPos + 20, compSizes(i)
+      PutUInt32LE outBytes, outPos + 24, rawSizes(i)
+    End If
+    PutUInt16LE outBytes, outPos + 28, nameLens(i)
+    PutUInt16LE outBytes, outPos + 30, 0    ' extra
+    PutUInt16LE outBytes, outPos + 32, 0    ' comment
+    PutUInt16LE outBytes, outPos + 34, 0    ' disk number
+    PutUInt16LE outBytes, outPos + 36, 0    ' internal attributes
+    PutUInt32LE outBytes, outPos + 38, 0    ' external attributes
+    PutUInt32LE outBytes, outPos + 42, localAt(i)
+    outPos = outPos + 46
+
+    CopyMemory VarPtr(outBytes(outPos)), VarPtr(zipBytes(names(i))), nameLens(i)
+    outPos = outPos + nameLens(i)
+  Next i
+
+  PutUInt32LE outBytes, outPos, &H6054B50
+  PutUInt16LE outBytes, outPos + 4, 0
+  PutUInt16LE outBytes, outPos + 6, 0
+  PutUInt16LE outBytes, outPos + 8, entryCount
+  PutUInt16LE outBytes, outPos + 10, entryCount
+  PutUInt32LE outBytes, outPos + 12, outPos - dirOutStart
+  PutUInt32LE outBytes, outPos + 16, dirOutStart
+  PutUInt16LE outBytes, outPos + 20, 0
+  outPos = outPos + 22
+
+  If outPos <> ByteCount(outBytes) Then ReDim Preserve outBytes(0 To outPos - 1)
+
+  If Not WriteFile(OutputPath, outBytes) Then
+    SetError "[RepackageOOXML] Could not write " & OutputPath
+    Exit Function
+  End If
+
+  LogMessage xrayInfo, "Repackaged " & entryCount & " zip entries, replacing entry " & replaceIdx
+  RepackageOOXML = True
+End Function
+
+' Scan back from the end for the end-of-central-directory signature. The record
+' is 22 bytes plus a comment of up to 65535, so that is as far back as it can be.
+Private Function FindEndOfCentralDirectory(ByRef data() As Byte) As Long
+  Dim size   As Long
+  Dim lowest As Long
+  Dim at     As Long
+
+  FindEndOfCentralDirectory = -1
+  size = ByteCount(data)
+  If size < 22 Then Exit Function
+
+  lowest = size - 22 - 65535
+  If lowest < 0 Then lowest = 0
+
+  For at = size - 22 To lowest Step -1
+    If data(at) = &H50 Then
+      If data(at + 1) = &H4B And data(at + 2) = &H5 And data(at + 3) = &H6 Then
+        FindEndOfCentralDirectory = at
+        Exit Function
+      End If
+    End If
+  Next at
+End Function
+
+Private Function LocalEntryDataStart(ByRef data() As Byte, ByVal localOffset As Long) As Long
+  LocalEntryDataStart = -1
+  If localOffset < 0 Or localOffset + 30 > UBound(data) Then Exit Function
+  If UInt32ToLong(data, localOffset) <> &H4034B50 Then Exit Function
+  LocalEntryDataStart = localOffset + 30 + ReadUInt16LE(data, localOffset + 26) + _
+                        ReadUInt16LE(data, localOffset + 28)
+End Function
+
+' True when the entry name ends with "/vbaProject.bin", whichever host folder it
+' sits in (xl, word or ppt).
+Private Function EntryNameIsVBAProject(ByRef data() As Byte, ByVal at As Long, ByVal nameLen As Long) As Boolean
+  Const TARGET As String = "/vbaproject.bin"
+  Dim name As String
+  Dim i    As Long
+
+  If nameLen < Len(TARGET) Then Exit Function
+  For i = 0 To nameLen - 1
+    name = name & Chr$(data(at + i))
+  Next i
+  EntryNameIsVBAProject = (LCase$(Right$(name, Len(TARGET))) = TARGET)
+End Function
+
+' CRC-32 as the zip format defines it. ROneCOne's version uses LongLong, which is
+' 64-bit VBA only; vbaXray still builds under VBA6, so the shifts here are done on
+' a signed Long with the sign bit handled separately.
+Private Function Crc32(ByRef data() As Byte) As Long
+  Dim crc As Long
+  Dim i   As Long
+
+  EnsureCrcTable
+  crc = -1                                ' &HFFFFFFFF
+  If ByteCount(data) > 0 Then
+    For i = LBound(data) To UBound(data)
+      crc = ShiftRight8(crc) Xor m_CrcTable((crc Xor CLng(data(i))) And &HFF&)
+    Next i
+  End If
+  Crc32 = crc Xor -1
+End Function
+
+Private Sub EnsureCrcTable()
+  Dim i     As Long
+  Dim bit   As Long
+  Dim entry As Long
+
+  If m_CrcReady Then Exit Sub
+  ReDim m_CrcTable(0 To 255)
+  For i = 0 To 255
+    entry = i
+    For bit = 1 To 8
+      If (entry And 1&) <> 0 Then
+        entry = &HEDB88320 Xor ShiftRight1(entry)
+      Else
+        entry = ShiftRight1(entry)
+      End If
+    Next bit
+    m_CrcTable(i) = entry
+  Next i
+  m_CrcReady = True
+End Sub
+
+' Logical, not arithmetic: VBA's \ operator would carry the sign bit down.
+Private Function ShiftRight1(ByVal v As Long) As Long
+  ShiftRight1 = (v And &H7FFFFFFF) \ 2&
+  If (v And &H80000000) <> 0 Then ShiftRight1 = ShiftRight1 Or &H40000000
+End Function
+
+Private Function ShiftRight8(ByVal v As Long) As Long
+  ShiftRight8 = (v And &H7FFFFFFF) \ &H100&
+  If (v And &H80000000) <> 0 Then ShiftRight8 = ShiftRight8 Or &H800000
+End Function
+
+' A zip 32-bit field as a Long, or -1 when it will not fit one (Zip64 territory).
+Private Function UInt32ToLong(ByRef data() As Byte, ByVal pos As Long) As Long
+  Dim v As Double
+  v = ReadUInt32LE(data, pos)
+  If v > 2147483647# Then
+    UInt32ToLong = -1
+  Else
+    UInt32ToLong = CLng(v)
+  End If
+End Function
+
+' The same four bytes reinterpreted, keeping all 32 bits. The CRC needs this: its
+' top bit carries data, and UInt32ToLong would report that as out of range.
+Private Function UInt32ToRaw(ByRef data() As Byte, ByVal pos As Long) As Long
+  CopyMemory VarPtr(UInt32ToRaw), VarPtr(data(pos)), 4
+End Function
+
+Private Sub PutUInt16LE(ByRef buf() As Byte, ByVal pos As Long, ByVal value As Long)
+  buf(pos) = value And &HFF&
+  buf(pos + 1) = (value \ 256&) And &HFF&
+End Sub
+
+Private Sub PutUInt32LE(ByRef buf() As Byte, ByVal pos As Long, ByVal value As Long)
+  CopyMemory VarPtr(buf(pos)), VarPtr(value), 4
+End Sub
+
+' Deflate a buffer into the raw deflate stream a zip method-8 entry stores.
+'
+' libarchive exposes no raw-deflate writer, but it does have a gzip filter, and a
+' gzip member is exactly a raw deflate stream inside a small header and an 8-byte
+' trailer. This is the relationship TryZlibInflate already relies on, run the
+' other way.
+'
+' Any failure returns False and the caller stores the entry uncompressed instead,
+' which is valid but larger.
+Private Function TryDeflateRaw(ByRef data() As Byte, ByRef result() As Byte) As Boolean
+#If Win64 Then
+  Dim hWrite     As LongPtr
+  Dim hEntry     As LongPtr
+  Dim buffer()   As Byte
+  Dim optBytes() As Byte
+  Dim used       As LongPtr
+  Dim capacity   As Long
+  Dim total      As Long
+  Dim gzipLen    As Long
+  Dim rawLen     As Long
+  Dim headerLen  As Long
+  Dim flg        As Long
+
+  On Error GoTo Cleanup   ' a missing DLL or entry point lands here, still False
+
+  total = ByteCount(data)
+  If total = 0 Then Exit Function
+
+  ' Deflate can expand incompressible input slightly; leave room for that plus
+  ' the gzip framing.
+  capacity = total + (total \ 1000&) + 4096
+  ReDim buffer(0 To capacity - 1)
+
+  hWrite = archive_write_new()
+  If hWrite = 0 Then GoTo Cleanup
+  If archive_write_add_filter_gzip(hWrite) <> ARCHIVE_OK Then GoTo Cleanup
+  If archive_write_set_format_raw(hWrite) <> ARCHIVE_OK Then GoTo Cleanup
+
+  ' Level 9, and no timestamp, so identical input always deflates to identical
+  ' bytes. StringToBytes does not terminate, hence the explicit null.
+  optBytes = StringToBytes("gzip:compression-level=9,gzip:timestamp=0" & vbNullChar, 1252)
+  If archive_write_set_options(hWrite, VarPtr(optBytes(0))) <> ARCHIVE_OK Then GoTo Cleanup
+  If archive_write_open_memory(hWrite, VarPtr(buffer(0)), capacity, used) <> ARCHIVE_OK Then GoTo Cleanup
+
+  hEntry = archive_entry_new()
+  If hEntry = 0 Then GoTo Cleanup
+  archive_entry_set_size hEntry, CLngLng(total)
+  archive_entry_set_filetype hEntry, AE_IFREG
+  If archive_write_header(hWrite, hEntry) <> ARCHIVE_OK Then GoTo Cleanup
+  If archive_write_data(hWrite, VarPtr(data(LBound(data))), total) <> total Then GoTo Cleanup
+  If archive_write_close(hWrite) <> ARCHIVE_OK Then GoTo Cleanup
+
+  gzipLen = CLng(used)
+  If gzipLen <= GZIP_HEADER_SIZE + GZIP_TRAILER_SIZE Then GoTo Cleanup
+  If buffer(0) <> &H1F Or buffer(1) <> &H8B Or buffer(2) <> 8 Then GoTo Cleanup
+
+  ' Optional fields named by FLG sit between the fixed header and the payload.
+  ' libarchive writes none of them here, but the format allows them.
+  flg = buffer(3)
+  headerLen = GZIP_HEADER_SIZE
+  If (flg And &H4) <> 0 Then      ' FEXTRA
+    headerLen = headerLen + 2 + (CLng(buffer(headerLen)) Or (CLng(buffer(headerLen + 1)) * 256&))
+  End If
+  If (flg And &H8) <> 0 Then      ' FNAME, null terminated
+    Do While headerLen < gzipLen
+      If buffer(headerLen) = 0 Then Exit Do
+      headerLen = headerLen + 1
+    Loop
+    headerLen = headerLen + 1
+  End If
+  If (flg And &H10) <> 0 Then     ' FCOMMENT, null terminated
+    Do While headerLen < gzipLen
+      If buffer(headerLen) = 0 Then Exit Do
+      headerLen = headerLen + 1
+    Loop
+    headerLen = headerLen + 1
+  End If
+  If (flg And &H2) <> 0 Then headerLen = headerLen + 2   ' FHCRC
+
+  rawLen = gzipLen - headerLen - GZIP_TRAILER_SIZE
+  If rawLen <= 0 Or headerLen >= gzipLen Then GoTo Cleanup
+
+  ReDim result(0 To rawLen - 1)
+  CopyMemory VarPtr(result(0)), VarPtr(buffer(headerLen)), rawLen
+  TryDeflateRaw = True
+
+Cleanup:
+  On Error Resume Next
+  If hEntry <> 0 Then archive_entry_free hEntry
+  If hWrite <> 0 Then archive_write_free hWrite
+  If Not TryDeflateRaw Then
+    LogMessage xrayDebug, "[TryDeflateRaw] Deflate unavailable; the entry will be stored instead"
+  End If
+#End If
 End Function
 
 Public Function IsCompoundFile(ByVal FilePath As String) As Boolean
@@ -933,7 +1860,12 @@ Private Function GetCFBLayout(ByVal ext As String) As CFBLayout
   GetCFBLayout = layout
 End Function
 
-Private Function StorageNavigate(ByRef rootStg As stdole.IUnknown, ByVal path As String, ByRef keepAlive As Collection) As stdole.IUnknown
+' keepAlive holds every storage opened along the way. Releasing an intermediate
+' early leaves the child reverted, so callers pass a collection that outlives the
+' returned storage. It is per-call, so the read and write modes never share one.
+Private Function StorageNavigate(ByRef rootStg As stdole.IUnknown, ByVal path As String, _
+                                 ByRef keepAlive As Collection, _
+                                 Optional ByVal writable As Boolean = False) As stdole.IUnknown
 
   Dim parts()     As String
   Dim current     As stdole.IUnknown
@@ -963,7 +1895,11 @@ Private Function StorageNavigate(ByRef rootStg As stdole.IUnknown, ByVal path As
     On Error GoTo 0
 
     If next_stg Is Nothing Then
-      Set next_stg = StorageOpenStorage(current, parts(i))
+      If writable Then
+        Set next_stg = StorageOpenStorageRW(current, parts(i))
+      Else
+        Set next_stg = StorageOpenStorage(current, parts(i))
+      End If
 
       If next_stg Is Nothing Then
         LogMessage xrayDebug, "[StorageNavigate] Could not open '" & parts(i) & "' in path '" & path & "'"
@@ -1439,12 +2375,24 @@ Private Function StorageOpenFile(ByVal FilePath As String) As stdole.IUnknown
 End Function
 
 Private Function StorageOpenBytes(ByRef data() As Byte) As stdole.IUnknown
+  Dim lockBytes As stdole.IUnknown
+  Set StorageOpenBytes = StorageOpenBytesCore(data, STGM_READ, lockBytes)
+End Function
+
+' Open an in-memory copy of a compound file.
+'
+' When grfMode permits writing, the caller must hold outLockBytes until
+' LockBytesToArray has read the result back. The HGLOBAL behind it is
+' reallocated whenever the storage grows, so the handle originally handed to
+' CreateILockBytesOnHGlobal cannot be cached and reused.
+Private Function StorageOpenBytesCore(ByRef data() As Byte, ByVal grfMode As Long, _
+                                      ByRef outLockBytes As stdole.IUnknown) As stdole.IUnknown
   Dim hMem     As LongPtr
   Dim lpMem    As LongPtr
-  Dim lockBytes As stdole.IUnknown
   Dim hr       As Long
   Dim dataSize As LongPtr
 
+  Set outLockBytes = Nothing
   dataSize = ByteCount(data)
   If dataSize = 0 Then Exit Function
 
@@ -1464,16 +2412,136 @@ Private Function StorageOpenBytes(ByRef data() As Byte) As stdole.IUnknown
   CopyMemory lpMem, VarPtr(data(LBound(data))), dataSize
   GlobalUnlock hMem
 
-  hr = CreateILockBytesOnHGlobal(hMem, 1, lockBytes)
+  hr = CreateILockBytesOnHGlobal(hMem, 1, outLockBytes)
   If hr < 0 Then
     GlobalFree hMem
     SetError "[StorageOpenBytes] CreateILockBytesOnHGlobal failed: &H" & Hex(hr)
     Exit Function
   End If
 
-  hr = StgOpenStorageOnILockBytes(ObjPtr(lockBytes), 0, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0, 0, StorageOpenBytes)
-  If hr < 0 Then SetError "[StorageOpenBytes] StgOpenStorageOnILockBytes failed: &H" & Hex(hr)
-  Set lockBytes = Nothing
+  hr = StgOpenStorageOnILockBytes(ObjPtr(outLockBytes), 0, grfMode Or STGM_SHARE_EXCLUSIVE, 0, 0, StorageOpenBytesCore)
+  If hr < 0 Then
+    Set outLockBytes = Nothing
+    SetError "[StorageOpenBytes] StgOpenStorageOnILockBytes failed: &H" & Hex(hr)
+  End If
+End Function
+
+Private Function StorageOpenStorageRW(ByRef pStg As stdole.IUnknown, ByVal StorageName As String) As stdole.IUnknown
+  Dim hr As Long
+  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_OpenStorage, StrPtr(StorageName), 0&, STGM_READWRITE Or STGM_SHARE_EXCLUSIVE, 0&, 0&, VarPtr(StorageOpenStorageRW))
+  If hr < 0 Then LogMessage xrayDebug, "IStorage.OpenStorage RW(" & StorageName & ") - hResult: &H" & Hex(hr)
+End Function
+
+Private Function StorageOpenStreamRW(ByRef pStg As stdole.IUnknown, ByVal streamName As String) As stdole.IUnknown
+  Dim hr As Long
+  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_OpenStream, StrPtr(streamName), 0&, STGM_READWRITE Or STGM_SHARE_EXCLUSIVE, 0&, VarPtr(StorageOpenStreamRW))
+  If hr < 0 Then LogMessage xrayDebug, "IStorage.OpenStream RW(" & streamName & ") - hResult: &H" & Hex(hr)
+End Function
+
+' Replace a stream's contents.
+'
+' SetSize comes first because the replacement is usually shorter than what it
+' displaces, and ReadModuleSource reads from MODULEOFFSET to the end of the
+' stream. A stale tail left behind would be decompressed as if it were source.
+Private Function StreamWriteBytes(ByRef pStm As stdole.IUnknown, ByRef data() As Byte) As Boolean
+  Dim hr      As Long
+  Dim written As Long
+  Dim total   As Long
+
+  If pStm Is Nothing Then Exit Function
+  total = ByteCount(data)
+
+  hr = DispCallByVtbl(pStm, IStreamInterface.IStm_SetSize, SizeToCurrency(total))
+  If hr < 0 Then
+    SetError "[StreamWriteBytes] IStream.SetSize failed: &H" & Hex(hr)
+    Exit Function
+  End If
+
+  hr = DispCallByVtbl(pStm, IStreamInterface.IStm_Seek, 0@, 0&, 0&)
+  If hr < 0 Then
+    SetError "[StreamWriteBytes] IStream.Seek failed: &H" & Hex(hr)
+    Exit Function
+  End If
+
+  If total > 0 Then
+    hr = DispCallByVtbl(pStm, IStreamInterface.IStm_Write, VarPtr(data(LBound(data))), total, VarPtr(written))
+    If hr < 0 Then
+      SetError "[StreamWriteBytes] IStream.Write failed: &H" & Hex(hr)
+      Exit Function
+    End If
+    If written <> total Then
+      SetError "[StreamWriteBytes] Short write: " & written & " of " & total & " bytes"
+      Exit Function
+    End If
+  End If
+
+  hr = DispCallByVtbl(pStm, IStreamInterface.IStm_Commit, 0&)
+  If hr < 0 Then
+    SetError "[StreamWriteBytes] IStream.Commit failed: &H" & Hex(hr)
+    Exit Function
+  End If
+
+  StreamWriteBytes = True
+End Function
+
+Private Function StorageCommit(ByRef pStg As stdole.IUnknown) As Boolean
+  Dim hr As Long
+  If pStg Is Nothing Then Exit Function
+  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_Commit, 0&)
+  If hr < 0 Then
+    SetError "[StorageCommit] IStorage.Commit failed: &H" & Hex(hr)
+    Exit Function
+  End If
+  StorageCommit = True
+End Function
+
+' Read a modified compound file back out of the ILockBytes it was built in.
+Private Function LockBytesToArray(ByRef pLock As stdole.IUnknown) As Byte()
+  Dim hr       As Long
+  Dim stat     As STATSTG
+  Dim hMem     As LongPtr
+  Dim lpMem    As LongPtr
+  Dim total    As Long
+  Dim result() As Byte
+
+  If pLock Is Nothing Then Exit Function
+
+  hr = DispCallByVtbl(pLock, ILockBytesInterface.ILkb_stat, VarPtr(stat), STATFLAG_NONAME)
+  If hr < 0 Then
+    SetError "[LockBytesToArray] ILockBytes.Stat failed: &H" & Hex(hr)
+    Exit Function
+  End If
+
+  total = CLng(stat.cbSize * 10000#)
+  If total <= 0 Then
+    SetError "[LockBytesToArray] Rebuilt compound file is empty"
+    Exit Function
+  End If
+
+  hr = GetHGlobalFromILockBytes(ObjPtr(pLock), hMem)
+  If hr < 0 Or hMem = 0 Then
+    SetError "[LockBytesToArray] GetHGlobalFromILockBytes failed: &H" & Hex(hr)
+    Exit Function
+  End If
+
+  lpMem = GlobalLock(hMem)
+  If lpMem = 0 Then
+    SetError "[LockBytesToArray] GlobalLock failed"
+    Exit Function
+  End If
+
+  ReDim result(0 To total - 1)
+  CopyMemory VarPtr(result(0)), lpMem, total
+  GlobalUnlock hMem
+
+  LockBytesToArray = result
+End Function
+
+' IStream and ILockBytes take 64-bit sizes. VBA has no unsigned 64-bit type, so
+' these travel as Currency, whose raw value is the real number scaled by 10000.
+' The read direction is the same conversion inverted, as in StorageEnumElements.
+Private Function SizeToCurrency(ByVal n As Long) As Currency
+  SizeToCurrency = CCur(n) / 10000@
 End Function
 
 Private Function StorageOpenStorage(ByRef pStg As stdole.IUnknown, ByVal StorageName As String) As stdole.IUnknown
@@ -1711,6 +2779,256 @@ Failed:
   If Not Silent Then
     SetError "[DecompressStream] Invalid or truncated compressed stream"
   End If
+End Function
+
+' LZ77 compression per MS-OVBA 2.4.1. The inverse of DecompressStream.
+'
+' Every chunk is emitted token-compressed. The specification also permits raw
+' chunks, but the VBE refuses to load a module whose first chunk is raw - "An
+' error occurred while loading <Module>" - even though such a stream decompresses
+' correctly. Raw is kept only as an escape for input that cannot be token-encoded
+' within 4096 bytes, which does not arise for source text.
+'
+' Matches come from a greedy scan over a 3-gram index. Candidates are walked in
+' ascending position order and only a strictly longer match displaces the
+' incumbent, so ties keep the farthest match. Those rules reproduce Office's own
+' encoder, so a rewritten module carries the same bytes the VBE would have
+' written for the same source. A literal-only encoder is also legal per the
+' specification and far simpler, but it emits bytes no Office component ever
+' produces, and pyOpenVBA found that Access rejects a module on that basis alone.
+Private Function CompressStream(ByRef data() As Byte) As Byte()
+  Dim output()   As Byte
+  Dim encoded()  As Byte
+  Dim outPos     As Long
+  Dim dataLb     As Long
+  Dim dataLen    As Long
+  Dim cursor     As Long
+  Dim chunkLen   As Long
+  Dim encLen     As Long
+  Dim header     As Long
+  Dim k          As Long
+
+  dataLen = ByteCount(data)
+
+  ' Signature byte, then per chunk a 2-byte header and a payload that is at worst
+  ' the input plus one flag byte per eight tokens.
+  ReDim output(0 To dataLen + (dataLen \ 4096 + 1) * 520& + 16)
+  output(0) = 1
+  outPos = 1
+
+  If dataLen = 0 Then
+    ReDim Preserve output(0 To 0)
+    CompressStream = output
+    Exit Function
+  End If
+
+  dataLb = LBound(data)
+
+  Do While cursor < dataLen
+    chunkLen = dataLen - cursor
+    If chunkLen > 4096 Then chunkLen = 4096
+
+    encLen = EncodeTokenChunk(data, dataLb + cursor, chunkLen, encoded)
+    If encLen <= 0 Then
+      SetError "[CompressStream] Chunk encoder produced no output at offset " & cursor
+      Exit Function
+    End If
+
+    If encLen <= 4096 Then
+      ' CompressedChunkFlag = 1, signature 0b011, size field is length - 1.
+      header = &HB000& Or (encLen - 1)
+      output(outPos) = header And &HFF&
+      output(outPos + 1) = (header \ 256&) And &HFF&
+      outPos = outPos + 2
+      For k = 0 To encLen - 1
+        output(outPos) = encoded(k)
+        outPos = outPos + 1
+      Next k
+    Else
+      ' A raw chunk carries exactly 4096 bytes, so a short final chunk that
+      ' overflows has no legal representation.
+      If chunkLen <> 4096 Then
+        SetError "[CompressStream] Final chunk of " & chunkLen & _
+                 " bytes encoded to " & encLen & " bytes and cannot be stored raw"
+        Exit Function
+      End If
+      output(outPos) = &HFF
+      output(outPos + 1) = &H3F
+      outPos = outPos + 2
+      For k = 0 To 4095
+        output(outPos) = data(dataLb + cursor + k)
+        outPos = outPos + 1
+      Next k
+    End If
+
+    cursor = cursor + chunkLen
+  Loop
+
+  ReDim Preserve output(0 To outPos - 1)
+  CompressStream = output
+End Function
+
+' Greedy LZ encoder for a single token-compressed chunk. Fills encoded() and
+' returns the number of bytes written. See CompressStream for why ties resolve
+' to the farthest match.
+'
+' The 3-gram index is four flat arrays, which VBA indexes far faster than it can
+' call into a Scripting.Dictionary: head and tail hold the first and last
+' position in each hash bucket, nxt chains them in
+' ascending order, and keyOf stores the full 24-bit 3-gram so a hash collision
+' cannot fabricate a match. Positions are one-based so that zero means empty and
+' the per-chunk reset is a plain ReDim.
+Private Function EncodeTokenChunk(ByRef data() As Byte, ByVal startIdx As Long, _
+                                  ByVal chunkLen As Long, ByRef encoded() As Byte) As Long
+  Dim head()       As Long
+  Dim tail()       As Long
+  Dim nxt()        As Long
+  Dim keyOf()      As Long
+  Dim pow2(0 To 16) As Long
+
+  Dim outPos       As Long
+  Dim pos          As Long
+  Dim indexedTo    As Long
+  Dim bit          As Long
+  Dim flagBits     As Long
+  Dim flagPos      As Long
+
+  Dim bitCount     As Long
+  Dim bitThreshold As Long
+  Dim lengthMask   As Long
+  Dim offsetMask   As Long
+  Dim shiftMul     As Long
+  Dim maxLength    As Long
+
+  Dim limit        As Long
+  Dim bestLen      As Long
+  Dim bestOff      As Long
+  Dim matchLen     As Long
+  Dim targetKey    As Long
+  Dim h            As Long
+  Dim slot         As Long
+  Dim candidate    As Long
+  Dim token        As Long
+  Dim i            As Long
+
+  If chunkLen <= 0 Then Exit Function
+
+  ' 4096 literals plus one flag byte per eight tokens is the widest this can get.
+  ReDim encoded(0 To 4608)
+  ReDim head(0 To 65535)
+  ReDim tail(0 To 65535)
+  ReDim nxt(0 To 4096)
+  ReDim keyOf(0 To 4096)
+
+  pow2(0) = 1
+  For i = 1 To 16
+    pow2(i) = pow2(i - 1) * 2
+  Next i
+
+  bitThreshold = -1     ' force the ladder to be evaluated on the first position
+
+  Do While pos < chunkLen
+    flagBits = 0
+    flagPos = outPos
+    outPos = outPos + 1
+
+    For bit = 0 To 7
+      If pos >= chunkLen Then Exit For
+
+      ' Same ladder DecompressStream uses, recomputed only when pos crosses one
+      ' of its eight boundaries.
+      If pos > bitThreshold Then
+        Select Case pos
+          Case Is <= 16:   bitCount = 4:  bitThreshold = 16
+          Case Is <= 32:   bitCount = 5:  bitThreshold = 32
+          Case Is <= 64:   bitCount = 6:  bitThreshold = 64
+          Case Is <= 128:  bitCount = 7:  bitThreshold = 128
+          Case Is <= 256:  bitCount = 8:  bitThreshold = 256
+          Case Is <= 512:  bitCount = 9:  bitThreshold = 512
+          Case Is <= 1024: bitCount = 10: bitThreshold = 1024
+          Case Is <= 2048: bitCount = 11: bitThreshold = 2048
+          Case Else:       bitCount = 12: bitThreshold = &H7FFFFFFF
+        End Select
+        shiftMul = pow2(16 - bitCount)
+        lengthMask = shiftMul - 1
+        offsetMask = &HFFFF& - lengthMask
+        maxLength = lengthMask + 3
+      End If
+
+      bestLen = 0
+      bestOff = 0
+
+      If pos + 3 <= chunkLen Then
+        ' Catch the index up. Positions inside a region already copied over are
+        ' still indexed, which is what makes later matches reachable.
+        Do While indexedTo < pos
+          If indexedTo + 3 <= chunkLen Then
+            slot = indexedTo + 1
+            keyOf(slot) = CLng(data(startIdx + indexedTo)) _
+                       Or (CLng(data(startIdx + indexedTo + 1)) * 256&) _
+                       Or (CLng(data(startIdx + indexedTo + 2)) * 65536)
+            h = ((CLng(data(startIdx + indexedTo)) * 256& + _
+                  CLng(data(startIdx + indexedTo + 1))) Xor _
+                 (CLng(data(startIdx + indexedTo + 2)) * 61&)) And &HFFFF&
+            nxt(slot) = 0
+            If head(h) = 0 Then
+              head(h) = slot
+            Else
+              nxt(tail(h)) = slot
+            End If
+            tail(h) = slot
+          End If
+          indexedTo = indexedTo + 1
+        Loop
+
+        limit = maxLength
+        If chunkLen - pos < limit Then limit = chunkLen - pos
+
+        targetKey = CLng(data(startIdx + pos)) _
+                 Or (CLng(data(startIdx + pos + 1)) * 256&) _
+                 Or (CLng(data(startIdx + pos + 2)) * 65536)
+        h = ((CLng(data(startIdx + pos)) * 256& + _
+              CLng(data(startIdx + pos + 1))) Xor _
+             (CLng(data(startIdx + pos + 2)) * 61&)) And &HFFFF&
+
+        slot = head(h)
+        Do While slot <> 0
+          If keyOf(slot) = targetKey Then
+            candidate = slot - 1
+            matchLen = 3
+            Do While matchLen < limit
+              If data(startIdx + candidate + matchLen) <> data(startIdx + pos + matchLen) Then Exit Do
+              matchLen = matchLen + 1
+            Loop
+            If matchLen > bestLen Then
+              bestLen = matchLen
+              bestOff = pos - candidate
+              ' Nothing later can strictly beat the cap.
+              If bestLen >= limit Then Exit Do
+            End If
+          End If
+          slot = nxt(slot)
+        Loop
+      End If
+
+      If bestLen >= 3 Then
+        flagBits = flagBits Or pow2(bit)
+        token = (((bestOff - 1) * shiftMul) And offsetMask) Or ((bestLen - 3) And lengthMask)
+        encoded(outPos) = token And &HFF&
+        encoded(outPos + 1) = (token \ 256&) And &HFF&
+        outPos = outPos + 2
+        pos = pos + bestLen
+      Else
+        encoded(outPos) = data(startIdx + pos)
+        outPos = outPos + 1
+        pos = pos + 1
+      End If
+    Next bit
+
+    encoded(flagPos) = flagBits
+  Loop
+
+  EncodeTokenChunk = outPos
 End Function
 
 Private Function DispCallByVtbl(ByRef pUnk As stdole.IUnknown, ByVal lIndex As Long, ParamArray a() As Variant) As Variant
