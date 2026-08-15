@@ -208,7 +208,6 @@ vbaXray was created by Kallun Willock (me).
 * **fafalone and The trick**, for the ZipFldr IStorage technique the OOXML path is built on: <https://www.vbforums.com/showthread.php?804893>
 * **Beakerboy**, for a great deal of careful MS-OVBA work: <https://github.com/Beakerboy/>
 * **WilliamSmithEdward** for solving the ACCDB/MDB formats: <https://github.com/WilliamSmithEdward/pyOpenVBA/>
-* **OLEVBA** — generally, but also the source reference for PPT record layout: <https://github.com/decalage2/oletools>
 
 ---
 
