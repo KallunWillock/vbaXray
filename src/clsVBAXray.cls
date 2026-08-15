@@ -43,7 +43,7 @@ Attribute VB_Exposed = False
 '  LICENSE:  MIT
 '
 '  VERSION:  1.0    23/03/2026    Initial release. OOXML only, via Shell.Application.
-'            2.0    15/06/2026    OOXML via ZipFldr IStorage, legacy compound
+'            2.0    15/08/2026    OOXML via ZipFldr IStorage, legacy compound
 '                                 files, legacy PowerPoint, Access, diagnostics.
 
 Option Explicit
