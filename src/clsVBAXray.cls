@@ -7,20 +7,44 @@ Attribute VB_GlobalNameSpace = False
 Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
-'  ||||||||||||||||||||||||||||||||||||||||||||
-'  |||||||||||||    vbaXRay    ||||||||||||||||
-'  ||||||||||||||||||||||||||||||||||||||||||||
+'  |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+'  |||||||||||||||||||||||||||    vbaXray (v2.0)    ||||||||||||||||||||||||||||||
+'  |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 '
-'    AUTHOR:   Kallun Willock
+'  AUTHOR:   Kallun Willock
 '
-'    URL:      https://github.com/KallunWillock/vbaXray
+'  URL:      https://github.com/KallunWillock/vbaXray
 '
-'    NOTES:    The class requires a vbaProject.bin file, which can be obtained
-'              from the container .XLSM, .DOCM, etc. file.
+'  NOTES:    * Reads VBA source code straight out of Office files.
+'            * OOXML (.xlsm, .xlam, .xlsb, .xltm, .docm, .dotm, .pptm, .potm, .ppsm,
+'              .ppam, .sldm) via the ZipFldr IStorage route. Nothing written to disk.
+'            * Legacy compound files (.xls/.xla/.xlt, .doc/.dot, .pub, .otm) read
+'              directly through StgOpenStorage.
+'            * Legacy PowerPoint (.ppt/.pps/.pot/.ppa), including zlib-compressed
+'              VbaProjectStg records.
+'            * Access (.accdb/.mdb) by walking LVAL database pages. Experimental,
+'              assumes 4096-byte ACE/Jet 4 pages.
 '
-'    LICENSE:  MIT
+'  CREDITS:  wqweto, without whom I would not know archiveint.dll existed at all:
+'            https://www.vbforums.com/showthread.php?894163-VB6-Decompress-gzip-stream-with-libarchive-on-Win10
 '
-'    VERSION:  1.0
+'            fafalone and The trick, for the ZipFldr IStorage technique the OOXML path
+'            is built on: https://www.vbforums.com/showthread.php?804893
+'
+'            Beakerboy, for a great deal of careful MS-OVBA work:
+'            https://github.com/Beakerboy/
+'
+'            WilliamSmithEdward for solving the ACCDB/MDB formats:
+'            https://github.com/WilliamSmithEdward/pyOpenVBA
+'
+'            OLEVBA - generally, but is also the source reference for PPT record layout:
+'            https://github.com/decalage2/oletools
+'
+'  LICENSE:  MIT
+'
+'  VERSION:  1.0    23/03/2026    Initial release. OOXML only, via Shell.Application.
+'            2.0    15/06/2026    OOXML via ZipFldr IStorage, legacy compound
+'                                 files, legacy PowerPoint, Access, diagnostics.
 
 Option Explicit
 
@@ -31,52 +55,97 @@ Option Explicit
 #End If
 
 #If VBA7 Then
-  Private Declare PtrSafe Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long, ByVal lpMultiByteStr As LongPtr, ByVal cbMultiByte As Long, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As Long
-  Private Declare PtrSafe Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpMultiByteStr As LongPtr, ByVal cbMultiByte As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long) As Long
+  #If Win64 Then
+    Private Declare PtrSafe Function archive_read_data_block Lib "archiveint.dll" (ByVal hRead As LongPtr, ByRef p As LongPtr, ByRef sz As LongPtr, ByRef off As LongLong) As Long
+  #Else
+    Private Declare PtrSafe Function archive_read_data_block Lib "archiveint.dll" (ByVal hRead As LongPtr, ByRef p As LongPtr, ByRef sz As LongPtr, ByRef off As Currency) As Long
+  #End If
+  Private Declare PtrSafe Function archive_read_new Lib "archiveint.dll" () As LongPtr
+  Private Declare PtrSafe Function archive_read_support_format_raw Lib "archiveint.dll" (ByVal hRead As LongPtr) As Long
+  Private Declare PtrSafe Function archive_read_support_filter_all Lib "archiveint.dll" (ByVal hRead As LongPtr) As Long
+  Private Declare PtrSafe Function archive_read_open_memory Lib "archiveint.dll" (ByVal hRead As LongPtr, ByVal pBuffer As LongPtr, ByVal bufferSize As LongPtr) As Long
+  Private Declare PtrSafe Function archive_read_next_header Lib "archiveint.dll" (ByVal hRead As LongPtr, ByRef hEntry As LongPtr) As Long
+  Private Declare PtrSafe Function archive_read_close Lib "archiveint.dll" (ByVal hRead As LongPtr) As Long
+  Private Declare PtrSafe Function archive_read_free Lib "archiveint.dll" (ByVal hRead As LongPtr) As Long
+
+  Private Declare PtrSafe Function apiCreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As LongPtr, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As LongPtr, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As LongPtr) As LongPtr
+  Private Declare PtrSafe Function apiWriteFile Lib "kernel32" Alias "WriteFile" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToWrite As Long, ByRef lpNumberOfBytesWritten As Long, ByVal lpOverlapped As LongPtr) As Long
+  Private Declare PtrSafe Function apiReadFile Lib "kernel32" Alias "ReadFile" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToRead As Long, ByRef lpNumberOfBytesRead As Long, ByVal lpOverlapped As LongPtr) As Long
+  Private Declare PtrSafe Function apiGetFileSizeEx Lib "kernel32" Alias "GetFileSizeEx" (ByVal hFile As LongPtr, ByRef lpFileSize As LongPtr) As Long
+  Private Declare PtrSafe Function apiCloseHandle Lib "kernel32" Alias "CloseHandle" (ByVal hObject As LongPtr) As Long
   Private Declare PtrSafe Function apiCreateDirectoryW Lib "kernel32" Alias "CreateDirectoryW" (ByVal lpPathName As LongPtr, ByVal lpSecurityAttributes As LongPtr) As Long
   Private Declare PtrSafe Function apiGetFileAttributesW Lib "kernel32" Alias "GetFileAttributesW" (ByVal lpFileName As LongPtr) As Long
+
+  Private Declare PtrSafe Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long, ByVal lpMultiByteStr As LongPtr, ByVal cbMultiByte As Long, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As Long
+  Private Declare PtrSafe Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpMultiByteStr As LongPtr, ByVal cbMultiByte As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long) As Long
   Private Declare PtrSafe Function StgOpenStorage Lib "ole32" (ByVal pwcsName As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ByRef ppstgOpen As stdole.IUnknown) As Long
-  Private Declare PtrSafe Function CreateILockBytesOnHGlobal Lib "ole32" (ByVal hGlobal As LongPtr, ByVal fDeleteOnRelease As Long, ppLkbyt As LongPtr) As Long
+  Private Declare PtrSafe Function CreateILockBytesOnHGlobal Lib "ole32" (ByVal hGlobal As LongPtr, ByVal fDeleteOnRelease As Long, ByRef ppLkbyt As stdole.IUnknown) As Long
   Private Declare PtrSafe Function StgOpenStorageOnILockBytes Lib "ole32" (ByVal pLkbyt As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ppstgOpen As stdole.IUnknown) As Long
+  Private Declare PtrSafe Function ILCreateFromPathW Lib "shell32" (ByVal pszPath As LongPtr) As LongPtr
   Private Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
   Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
   Private Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
   Private Declare PtrSafe Function GlobalFree Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+
   Private Declare PtrSafe Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As LongPtr, ByVal oVft As LongPtr, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
   Private Declare PtrSafe Function lstrlenW Lib "kernel32" (ByVal lpString As LongPtr) As Long
-  Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal dest As LongPtr, ByVal src As LongPtr, ByVal cb As LongPtr)
+  Private Declare PtrSafe Function CoCreateInstance Lib "ole32" (rclsid As UUID, ByVal pUnkOuter As LongPtr, ByVal dwClsContext As Long, riid As UUID, ppv As stdole.IUnknown) As Long
+  Private Declare PtrSafe Function CLSIDFromString Lib "ole32" (ByVal lpsz As LongPtr, pclsid As UUID) As Long
+  Private Declare PtrSafe Function ILFree Lib "shell32" (ByVal pidl As LongPtr) As Long
   Private Declare PtrSafe Sub CoTaskMemFree Lib "ole32" (ByVal pv As LongPtr)
+  Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal dest As LongPtr, ByVal src As LongPtr, ByVal cb As LongPtr)
 #Else
   Private Enum LongPtr
     [_]
   End Enum
+  Private Declare Function archive_read_new Lib "archiveint.dll" Alias "_archive_read_new@0" () As Long
+  Private Declare Function archive_read_free Lib "archiveint.dll" Alias "_archive_read_free@4" (ByVal hArchive As Long) As Long
+  Private Declare Function archive_read_close Lib "archiveint.dll" Alias "_archive_read_close@4" (ByVal hArchive As Long) As Long
+  Private Declare Function archive_read_support_format_raw Lib "archiveint.dll" Alias "_archive_read_support_format_raw@4" (ByVal h As Long) As Long
+  Private Declare Function archive_read_support_filter_all Lib "archiveint.dll" Alias "_archive_read_support_filter_all@4" (ByVal h As Long) As Long
+  Private Declare Function archive_read_open_memory Lib "archiveint.dll" Alias "_archive_read_open_memory@12" (ByVal h As Long, ByVal pBuffer As Long, ByVal bufferSize As Long) As Long
+  Private Declare Function archive_read_next_header Lib "archiveint.dll" Alias "_archive_read_next_header@8" (ByVal h As Long, ByRef hEntry As Long) As Long
+  Private Declare Function archive_read_data_block Lib "archiveint.dll" Alias "_archive_read_data_block@16" (ByVal h As Long, ByRef pBuff As Long, ByRef size As Long, ByRef offset As Currency) As Long
+
+  Private Declare Function apiCreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As LongPtr, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As LongPtr, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As LongPtr) As LongPtr
+  Private Declare Function apiWriteFile Lib "kernel32" Alias "WriteFile" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToWrite As Long, ByRef lpNumberOfBytesWritten As Long, ByVal lpOverlapped As LongPtr) As Long
+  Private Declare Function apiReadFile Lib "kernel32" Alias "ReadFile" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToRead As Long, ByRef lpNumberOfBytesRead As Long, ByVal lpOverlapped As LongPtr) As Long
+  Private Declare Function apiGetFileSizeEx Lib "kernel32" Alias "GetFileSizeEx" (ByVal hFile As LongPtr, ByRef lpFileSize As LongPtr) As Long
+  Private Declare Function apiCloseHandle Lib "kernel32" Alias "CloseHandle" (ByVal hObject As LongPtr) As Long
+  Private Declare Function ILCreateFromPathW Lib "shell32" (ByVal pszPath As LongPtr) As LongPtr
   Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long, ByVal lpMultiByteStr As LongPtr, ByVal cbMultiByte As Long, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As Long
   Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpMultiByteStr As LongPtr, ByVal cbMultiByte As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long) As Long
   Private Declare Function apiCreateDirectoryW Lib "kernel32" Alias "CreateDirectoryW" (ByVal lpPathName As LongPtr, ByVal lpSecurityAttributes As LongPtr) As Long
   Private Declare Function apiGetFileAttributesW Lib "kernel32" Alias "GetFileAttributesW" (ByVal lpFileName As LongPtr) As Long
+  Private Declare Function CoCreateInstance Lib "ole32" (rclsid As UUID, ByVal pUnkOuter As LongPtr, ByVal dwClsContext As Long, riid As UUID, ppv As stdole.IUnknown) As Long
+  Private Declare Function CLSIDFromString Lib "ole32" (ByVal lpsz As LongPtr, pclsid As UUID) As Long
+  Private Declare Function ILFree Lib "shell32" (ByVal pidl As LongPtr) As Long
   Private Declare Function StgOpenStorage Lib "ole32" (ByVal pwcsName As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ByRef ppstgOpen As stdole.IUnknown) As Long
-  Private Declare Function CreateILockBytesOnHGlobal Lib "ole32" (ByVal hGlobal As LongPtr, ByVal fDeleteOnRelease As Long, ppLkbyt As LongPtr) As Long
+  Private Declare Function CreateILockBytesOnHGlobal Lib "ole32" (ByVal hGlobal As LongPtr, ByVal fDeleteOnRelease As Long, ByRef ppLkbyt As stdole.IUnknown) As Long
   Private Declare Function StgOpenStorageOnILockBytes Lib "ole32" (ByVal pLkbyt As LongPtr, ByVal pstgPriority As LongPtr, ByVal grfMode As Long, ByVal snbExclude As LongPtr, ByVal reserved As Long, ppstgOpen As stdole.IUnknown) As Long
+
   Private Declare Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
   Private Declare Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
   Private Declare Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
   Private Declare Function GlobalFree Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+
   Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As LongPtr, ByVal oVft As LongPtr, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
   Private Declare Function lstrlenW Lib "kernel32" (ByVal lpString As LongPtr) As Long
+
   Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal dest As LongPtr, ByVal src As LongPtr, ByVal cb As LongPtr)
   Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As LongPtr)
 #End If
 
 Private Type UUID
-  Data1 As Long
-  Data2 As Integer
-  Data3 As Integer
-  Data4(0 To 7) As Byte
+  Data1             As Long
+  Data2             As Integer
+  Data3             As Integer
+  Data4(0 To 7)     As Byte
 End Type
 
 Private Type FILETIME
-  dwLowDateTime  As Long
-  dwHighDateTime As Long
+  dwLowDateTime     As Long
+  dwHighDateTime    As Long
 End Type
 
 Private Type STATSTG
@@ -139,14 +208,41 @@ Private Enum STGTY
   STGTY_PROPERTY = 4
 End Enum
 
-Private Const STGM_READ                As Long = &H0
-Private Const STGM_SHARE_DENY_WRITE    As Long = &H20
-Private Const STGM_SHARE_EXCLUSIVE     As Long = &H10
-Private Const STATFLAG_NONAME          As Long = 1
-Private Const CC_STDCALL               As Long = 4
-Private Const INVALID_FILE_ATTRIBUTES  As Long = -1
-Private Const FILE_ATTRIBUTE_DIRECTORY As Long = &H10
-Private Const GMEM_MOVEABLE            As Long = &H2
+Private Const STGM_READ                 As Long = &H0
+Private Const STGM_SHARE_DENY_WRITE     As Long = &H20
+Private Const STGM_SHARE_EXCLUSIVE      As Long = &H10
+Private Const CC_STDCALL                As Long = 4
+Private Const INVALID_FILE_ATTRIBUTES   As Long = -1
+Private Const FILE_ATTRIBUTE_DIRECTORY  As Long = &H10
+Private Const GMEM_MOVEABLE             As Long = &H2
+
+Private Const GENERIC_WRITE             As Long = &H40000000
+Private Const GENERIC_READ              As Long = &H80000000
+Private Const OPEN_EXISTING             As Long = 3
+Private Const FILE_SHARE_READ           As Long = &H1
+Private Const FILE_SHARE_WRITE          As Long = &H2
+Private Const FILE_SHARE_DELETE         As Long = &H4
+Private Const CREATE_ALWAYS             As Long = 2
+Private Const INVALID_HANDLE_VALUE      As LongPtr = -1
+Private Const CLSCTX_INPROC_SERVER      As Long = 1
+Private Const ARCHIVE_OK                As Long = 0
+Private Const ARCHIVE_EOF               As Long = 1
+Private Const PPT_VBA_PROJECT_STG       As Long = &H1011&
+Private Const MAX_EMBEDDED_PROJECT_SIZE As Long = 268435456  ' 256 Mb safety ceiling
+Private Const GZIP_HEADER_SIZE          As Long = 10
+Private Const GZIP_TRAILER_SIZE         As Long = 8
+Private Const VBAXRAY_VERSION           As Single = 2#
+
+Private Const IID_IPersistFolder        As String = "{000214EA-0000-0000-C000-000000000046}"
+Private Const IID_IStorage              As String = "{0000000B-0000-0000-C000-000000000046}"
+Private Const CLSID_ZipFolder           As String = "{E88DCCE0-B7B3-11d1-A9F0-00AA0060FA31}"
+
+Public Enum XrayLogLevel
+  xrayDebug = 0
+  xrayInfo = 1
+  xrayWarning = 2
+  xrayError = 3
+End Enum
 
 Public Enum ModuleType
   modOther
@@ -157,16 +253,17 @@ Public Enum ModuleType
 End Enum
 
 Private Type ModuleRecord
-  Name       As String
-  StreamName As String
-  Offset     As Long
-  ModType    As ModuleType
-  IsForm     As Boolean
-  SourceCode As String
+  Name        As String
+  streamName  As String
+  offset      As Long
+  ModType     As ModuleType
+  IsForm      As Boolean
+  SourceCode  As String
 End Type
 
 Private Type ProjectRecord
   Name                As String
+  Description         As String
   FilePath            As String
   CodePage            As Long
   IsPasswordProtected As Boolean
@@ -174,14 +271,48 @@ Private Type ProjectRecord
   Modules()           As ModuleRecord
 End Type
 
-Private m_Project As ProjectRecord
+Private Type CFBLayout
+  VBAPath     As String
+  projectPath As String
+End Type
 
-' -------------------
-'  Public Properties
-' -------------------
+Private m_Project           As ProjectRecord
+Private m_StorageTree       As Collection
+Private m_LastError         As String
+Private m_LogLevel          As XrayLogLevel
+Private m_LastOperationTime As Double
+Private m_StartTimer        As Double
+
+Public Property Get Version() As Single
+  Version = VBAXRAY_VERSION
+End Property
+
+Public Property Get LastError() As String
+  LastError = m_LastError
+End Property
+
+Public Property Get LastOperationTime() As Double
+  LastOperationTime = m_LastOperationTime
+End Property
+
+Public Property Let LogLevel(ByVal val As XrayLogLevel)
+  m_LogLevel = val
+End Property
+
+Public Property Get LogLevel() As XrayLogLevel
+  LogLevel = m_LogLevel
+End Property
 
 Public Property Get ProjectName() As String
   ProjectName = m_Project.Name
+End Property
+
+Public Property Get ProjectDescription() As String
+  ProjectDescription = m_Project.Description
+End Property
+
+Public Property Get FilePath() As String
+  FilePath = m_Project.FilePath
 End Property
 
 Public Property Get CodePage() As Long
@@ -192,292 +323,797 @@ Public Property Get IsPasswordProtected() As Boolean
   IsPasswordProtected = m_Project.IsPasswordProtected
 End Property
 
+Public Property Get IsLoaded() As Boolean
+  IsLoaded = (m_Project.ModuleCount > 0)
+End Property
+
 Public Property Get ModuleCount() As Long
   ModuleCount = m_Project.ModuleCount
 End Property
 
-Public Property Get ModuleName(ByVal Index As Long) As String
-  If Index < 1 Or Index > m_Project.ModuleCount Then Debug.Print "ModuleName - Index out of range": Exit Property
-  ModuleName = m_Project.Modules(Index).Name
+Public Property Get ModuleName(ByVal index As Long) As String
+  If index < 1 Or index > m_Project.ModuleCount Then
+    SetError "[ModuleName] Index out of range": Exit Property
+  End If
+  ModuleName = m_Project.Modules(index).Name
 End Property
 
-Public Property Get ModuleType(ByVal Index As Long) As ModuleType
-  If Index < 1 Or Index > m_Project.ModuleCount Then Debug.Print "ModuleType - Index out of range": Exit Property
-  ModuleType = m_Project.Modules(Index).ModType
+Public Property Get ModuleType(ByVal index As Long) As ModuleType
+  If index < 1 Or index > m_Project.ModuleCount Then
+    SetError "[ModuleType] Index out of range": Exit Property
+  End If
+  ModuleType = m_Project.Modules(index).ModType
 End Property
 
-Public Property Get IsForm(ByVal Index As Long) As Boolean
-  If Index < 1 Or Index > m_Project.ModuleCount Then Debug.Print "IsForm - Index out of range": Exit Property
-  IsForm = m_Project.Modules(Index).IsForm
+Public Property Get IsForm(ByVal index As Long) As Boolean
+  If index < 1 Or index > m_Project.ModuleCount Then
+    SetError "[IsForm] Index out of range": Exit Property
+  End If
+  IsForm = m_Project.Modules(index).IsForm
 End Property
 
-Public Property Get SourceCode(ByVal Index As Long) As String
-  If Index < 1 Or Index > m_Project.ModuleCount Then Debug.Print "SourceCode - Index out of range": Exit Property
-  SourceCode = m_Project.Modules(Index).SourceCode
+Public Property Get SourceCode(ByVal index As Long) As String
+  If index < 1 Or index > m_Project.ModuleCount Then
+    SetError "[SourceCode] Index out of range": Exit Property
+  End If
+  SourceCode = m_Project.Modules(index).SourceCode
 End Property
 
-Public Function FullSourceCode(Optional ByVal Separator As String = vbCrLf & vbCrLf & _
-                               "' ------------------------------" & vbCrLf & _
-                               "' Module: {0}" & vbCrLf & _
-                               "' ------------------------------" & vbCrLf) As String
-    
-  If m_Project.ModuleCount = 0 Then Exit Function
-  Dim parts() As String, i As Long
-  ReDim parts(1 To m_Project.ModuleCount)
-  For i = 1 To m_Project.ModuleCount
-    parts(i) = Replace(Separator, "{0}", m_Project.Modules(i).Name) & m_Project.Modules(i).SourceCode
-  Next i
-
-  FullSourceCode = Join(parts, vbNullString)
-
+Public Function LoadFromFile(ByVal FilePath As String) As Boolean
+  ClearError
+  Reset
+  LoadFromFile = False
+  m_StartTimer = Timer
+  If FileExists(FilePath) Then
+    Dim ext As String
+    ext = LCase$(VBA.Mid$(FilePath, InStrRev(FilePath, ".") + 1))
+    If ext = "accde" Or ext = "mde" Then
+      SetError "[LoadFromFile] " & UCase$(ext) & " files have VBA source removed at compile time - only p-code remains. Source extraction is not possible."
+    ElseIf ext = "accdb" Or ext = "accdt" Or ext = "accdr" Or ext = "mdb" Then
+      LoadFromFile = LoadFromAccessDB(FilePath)
+      If LoadFromFile Then m_Project.FilePath = FilePath
+    ElseIf IsCompoundFile(FilePath) Then
+      Select Case ext
+      Case "ppt", "pps", "pot", "ppa"
+        LoadFromFile = LoadFromLegacyPowerPoint(FilePath)
+        If LoadFromFile Then m_Project.FilePath = FilePath
+      Case Else
+        Dim fileStorage As stdole.IUnknown
+        Set fileStorage = StorageOpenFile(FilePath)
+        LoadFromStorage fileStorage, ext
+        LoadFromFile = IsLoaded
+        If LoadFromFile Then m_Project.FilePath = FilePath
+      End Select
+    Else
+      Select Case ext
+      Case "xlsm", "xlam", "xlsb", "xltm", "docm", "dotm", "pptm", "potm", "ppsm", "ppam", "sldm"
+        Dim vbaBytes() As Byte
+        vbaBytes = GetVBAProjectBinBytes(FilePath)
+        If ByteCount(vbaBytes) > 0 Then
+          LoadFromFile = LoadFromByteArray(vbaBytes)
+          If LoadFromFile Then m_Project.FilePath = FilePath
+        End If
+      Case Else
+        SetError "[LoadFromFile] Unrecognised file type '." & ext & "'"
+      End Select
+    End If
+  Else
+    SetError "[LoadFromFile] File not found: " & FilePath
+  End If
+  m_LastOperationTime = Timer - m_StartTimer
 End Function
 
-' --------------------------
-'  Public Methods - Loading
-' --------------------------
-
-Public Sub LoadFromFile(ByVal FilePath As String)
-  If Not FileExists(FilePath) Then
-    Debug.Print "LoadFromFile: File not found: " & FilePath
-    Exit Sub
-  End If
-
-  Select Case LCase$(Right$(FilePath, 4))
-    Case "xlsm", "xlam", "docm", "dotm", "pptm", "potm"
-      Dim TempFolder As String
-      Dim BinPath    As String
-      TempFolder = Environ$("TEMP") & "\vbaXray_" & Format(Now, "hhnnss")
-      If Not CreateFolderRecursive(TempFolder) Then
-        Debug.Print "LoadFromFile: Failed to create temp folder"
-        Exit Sub
+Public Function LoadFromByteArray(ByRef VBAProjectBinData() As Byte) As Boolean
+    ClearError
+    Reset
+    LoadFromByteArray = False
+    m_StartTimer = Timer
+    If ByteCount(VBAProjectBinData) >= 8 Then
+      If IsCompoundFileBytes(VBAProjectBinData) Then
+        Dim byteStorage As stdole.IUnknown
+        Set byteStorage = StorageOpenBytes(VBAProjectBinData)
+        If Not byteStorage Is Nothing Then
+          LoadFromStorage byteStorage, "bin"
+          LoadFromByteArray = IsLoaded
+        End If
+      Else
+        SetError "[LoadFromByteArray] Data does not have a valid Compound Document signature"
       End If
-      BinPath = ExtractVBAProjectBin(FilePath, TempFolder)
-      If Len(BinPath) > 0 Then LoadFromStorage StorageOpenFile(BinPath)
-      On Error Resume Next
-      Kill BinPath
-      RmDir TempFolder
-    Case Else
-      LoadFromStorage StorageOpenFile(FilePath)
-  End Select
-End Sub
-
-Public Sub LoadFromByteArray(ByRef VBAProjectBinData() As Byte)
-  LoadFromStorage StorageOpenBytes(VBAProjectBinData)
-End Sub
+    Else
+      SetError "[LoadFromByteArray] Data is too small to be a valid Compound Document"
+    End If
+    m_LastOperationTime = Timer - m_StartTimer
+End Function
 
 Public Sub Reset()
-  Dim EmptyStruct As ProjectRecord
-  m_Project = EmptyStruct
+  Dim EmptyProject As ProjectRecord
+  m_Project = EmptyProject
   m_Project.CodePage = 1252
-  m_Project.ModuleCount = 0
-  m_Project.Name = ""
-  m_Project.IsPasswordProtected = False
+  Set m_StorageTree = Nothing
 End Sub
 
-' ----------------------------
-'  Public Methods - Exporting
-' ----------------------------
+Public Sub ExportAll(ByVal ExportPath As String)
+  ClearError
+  If Not PrepareExport("ExportAll", ExportPath) Then Exit Sub
 
-Public Sub ExportAll(ByVal ExportPath As String, _
-                     Optional ByVal StoreVBAprojectBinInDest As Boolean = True)
-                     
-  If m_Project.ModuleCount = 0 Then
-    Debug.Print "ExportAll - No project loaded - call LoadFromFile or LoadFromByteArray first"
-  End If
-
-  If Not FolderExists(ExportPath) Then CreateFolderRecursive ExportPath
-
-  Dim i As Long
+  m_StartTimer = Timer
+  Dim i         As Long
+  Dim succeeded As Long
+  Dim Failed    As Long
   For i = 1 To m_Project.ModuleCount
-    ExportModule i, ExportPath
+    If WriteModule(i, ExportPath) Then
+      succeeded = succeeded + 1
+    Else
+      Failed = Failed + 1
+    End If
   Next i
+  m_LastOperationTime = Timer - m_StartTimer
 
-  Debug.Print "Export complete. " & m_Project.ModuleCount & " modules exported to: " & ExportPath
+  LogMessage xrayInfo, "Export complete. " & succeeded & " module(s) exported; " & Failed & " failed. Destination: " & ExportPath
 End Sub
 
-Public Sub ExportModule(ByVal Index As Long, ByVal ExportPath As String)
-  If m_Project.ModuleCount = 0 Then
-    err.Raise vbObjectError, "ExportModule", "No project loaded"
+Public Sub ExportModule(ByVal index As Long, ByVal ExportPath As String)
+  ClearError
+  If Not PrepareExport("ExportModule", ExportPath) Then Exit Sub
+  If index < 1 Or index > m_Project.ModuleCount Then
+    SetError "[ExportModule] Index " & index & " out of range"
+    Exit Sub
   End If
-  If Index < 1 Or Index > m_Project.ModuleCount Then err.Raise 9
-
-  If Not FolderExists(ExportPath) Then CreateFolderRecursive ExportPath
-  WriteModule Index, ExportPath
+  If Not WriteModule(index, ExportPath) Then
+    SetError "[ExportModule] Export failed for module " & m_Project.Modules(index).Name
+  End If
 End Sub
 
 Public Sub ExportModuleByName(ByVal modName As String, ByVal ExportPath As String)
-  If m_Project.ModuleCount = 0 Then
-    Debug.Print "ExportModuleByName - No project loaded"
-    Exit Sub
-  End If
-
+  ClearError
   Dim i As Long
   For i = 1 To m_Project.ModuleCount
     If StrComp(m_Project.Modules(i).Name, modName, vbTextCompare) = 0 Then
       ExportModule i, ExportPath
       Exit Sub
     End If
-  Next
-
-  Debug.Print "ExportModuleByName - Module not found: " & modName
+  Next i
+  SetError "[ExportModuleByName] Module not found: " & modName
 End Sub
 
-' ----------------------
-'  Core logic (private)
-' ----------------------
-
-' Based off code I wote for a separate project:
-' https://www.mrexcel.com/board/threads/alternative-approach-to-fix-those-problematic-excel-files-when-excel-sees-1048576-as-the-last-row-you-cant-fix-it.1199633/post-5856635
-'
-' Extracts vbaProject.bin from an Office Open XML file (.xlsm, .docm, .pptm etc.).
-' NB: Access files (.accdb/.accde) are not supported - my understanding is that they use a
-' completely different binary format and cannot be handled this way.
-'
-' Returns the path to the extracted file, or empty string on failure.
-
-Private Function ExtractVBAProjectBin(ByVal OfficePath As String, ByVal DestFolder As Variant) As String
-    
-    Dim ZipPath    As Variant
-    Dim ShellApp   As Object
-    Dim ZipDir     As Object
-    Dim BinFile    As Object
-    Dim DestNS     As Object
-    Dim InternalPath As String
-    Dim Elapsed    As Single
-    
-    On Error GoTo Failed
-    
-    ' Determine internal ZIP path by file extension
-    Select Case LCase$(Right$(OfficePath, 4))
-      Case "xlsm", "xlam"
-        InternalPath = "\xl\"
-      Case "docm", "dotm"
-        InternalPath = "\word\"
-      Case "pptm", "potm"
-        InternalPath = "\ppt\"
-      Case Else
-        If LCase(OfficePath) Like "*vbaProject.bin" Then
-          ExtractVBAProjectBin = OfficePath
-          Exit Function
-        End If
-    End Select
-    
-    ' Make a temporary ZIP copy
-    ZipPath = Left$(OfficePath, InStrRev(OfficePath, ".")) & "zip"
-    FileCopy OfficePath, ZipPath
-    
-    Set ShellApp = CreateObject("Shell.Application")
-    Set ZipDir = ShellApp.nameSpace(ZipPath & InternalPath)
-    
-    If ZipDir Is Nothing Then GoTo Failed
-    
-    Set BinFile = ZipDir.items.Item("vbaProject.bin")
-    If BinFile Is Nothing Then GoTo Failed  ' No VBA project in this file
-    
-    If Not FolderExists(DestFolder) Then
-      If Not CreateFolderRecursive(DestFolder) Then
-        Debug.Print "ExtractVBAProjectBin: Failed to create destination folder"
-        Exit Function
-      End If
-    End If
-    Set DestNS = ShellApp.nameSpace(DestFolder)
-    If DestNS Is Nothing Then GoTo Failed
-    
-    DestNS.CopyHere BinFile.Path, 20  ' 20 = suppress dialogs and prompts
-    
-    ' Wait for async copy to complete (timeout after 30 seconds)
-    Elapsed = Timer
-    Do Until Not DestNS.items.Item("vbaproject.bin") Is Nothing
-        DoEvents
-        If Timer - Elapsed > 30 Then GoTo Failed
-    Loop
-    
-    Kill ZipPath
-    ExtractVBAProjectBin = DestFolder & "\vbaProject.bin"
+Private Function PrepareExport(ByVal caller As String, ByRef ExportPath As String) As Boolean
+  If Not IsLoaded Then
+    SetError "[" & caller & "] No project loaded - call LoadFromFile or LoadFromByteArray first"
     Exit Function
+  End If
 
-Failed:
-    On Error Resume Next
-    Kill ZipPath
-    ExtractVBAProjectBin = ""
+  ExportPath = VBA.Trim$(ExportPath)
+  If Right$(ExportPath, 1) <> "\" Then ExportPath = ExportPath & "\"
+  If Not FolderExists(ExportPath) Then
+    If Not CreateFolderRecursive(ExportPath) Then
+      SetError "[" & caller & "] Could not create export folder: " & ExportPath
+      Exit Function
+    End If
+  End If
+
+  PrepareExport = True
 End Function
 
-Private Sub LoadFromStorage(ByRef topStg As stdole.IUnknown)
-  
-  Reset
+Public Function FullSourceCode(Optional ByVal Separator As String = vbCrLf & vbCrLf & _
+                               "' ------------------------------" & vbCrLf & _
+                               "' Module: {0}" & vbCrLf & _
+                               "' ------------------------------" & vbCrLf) As String
+  If m_Project.ModuleCount = 0 Then Exit Function
+  Dim parts() As String, i As Long
+  ReDim parts(1 To m_Project.ModuleCount)
+  For i = 1 To m_Project.ModuleCount
+    parts(i) = Replace(Separator, "{0}", m_Project.Modules(i).Name) & m_Project.Modules(i).SourceCode
+  Next i
+  FullSourceCode = Join(parts, vbNullString)
+End Function
 
+Public Function IsCompoundFile(ByVal FilePath As String) As Boolean
+  Dim header() As Byte
+  header = ReadFile(FilePath, 8)
+  If ByteCount(header) < 8 Then Exit Function
+  IsCompoundFile = IsCompoundFileBytes(header)
+End Function
+
+Public Sub DebugDumpStorageTree(Optional ByVal OutputFilePath As String = vbNullString)
+  If m_StorageTree Is Nothing Then
+    SetError "[DebugDumpStorageTree] No storage loaded."
+    Exit Sub
+  End If
+  Dim output As String
+  output = "." & vbCrLf
+  TreeNodeRender m_StorageTree, "", output
+  If Len(OutputFilePath) > 0 Then
+    Dim rawOutput() As Byte
+    rawOutput = StrConv(output, vbFromUnicode)
+    If WriteFile(OutputFilePath, rawOutput) Then
+      LogMessage xrayInfo, "Storage tree written to: " & OutputFilePath
+    Else
+      SetError "[DebugDumpStorageTree] Failed to write to: " & OutputFilePath
+    End If
+  Else
+    Debug.Print output
+  End If
+End Sub
+
+Private Function EscapeName(ByVal s As String) As String
+  Dim i  As Long
+  Dim ch As Long
+  Dim out As String
+  For i = 1 To Len(s)
+    ch = AscW(VBA.Mid$(s, i, 1)) And &HFFFF&
+    If ch < 32 Or ch = 127 Then
+      out = out & "\x" & Right$("0" & Hex$(ch), 2)
+    Else
+      out = out & VBA.Mid$(s, i, 1)
+    End If
+  Next i
+  EscapeName = out
+End Function
+
+Private Function GetVBAProjectBinBytes(ByVal OfficePath As String) As Byte()
+  Dim target    As String
+  Dim folderPath As String
+
+  Select Case LCase$(Right$(OfficePath, 4))
+    Case "xlsm", "xlam", "xlsb", "xltm"
+      folderPath = "xl":   target = "vbaProject.bin"
+    Case "docm", "dotm"
+      folderPath = "word": target = "vbaProject.bin"
+    Case "pptm", "potm", "ppsm", "ppam", "sldm"
+      folderPath = "ppt":  target = "vbaProject.bin"
+    Case Else
+      If LCase$(OfficePath) Like "*vbaproject.bin" Then
+        GetVBAProjectBinBytes = ReadFile(OfficePath)
+      Else
+        SetError "[GetVBAProjectBinBytes] Unrecognised extension"
+      End If
+      Exit Function
+  End Select
+
+  Dim zipStg    As stdole.IUnknown
+  Dim folderStg As stdole.IUnknown
+  Dim folderRaw As stdole.IUnknown
+  Dim pStm      As stdole.IUnknown
+  Dim hr As Long
+  Set zipStg = StorageOpenZip(OfficePath)
+  If Not zipStg Is Nothing Then
+    hr = DispCallByVtbl(zipStg, IStorageInterface.IStg_OpenStorage, StrPtr(folderPath), 0&, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0&, 0&, VarPtr(folderRaw))
+    If hr = 0 And Not folderRaw Is Nothing Then
+      Set folderStg = COMQueryInterface(folderRaw, IID_IStorage)
+      If Not folderStg Is Nothing Then
+        Set pStm = StorageOpenStream(folderStg, target)
+        If Not pStm Is Nothing Then
+          GetVBAProjectBinBytes = StreamReadBytes(pStm)
+          Exit Function
+        End If
+      End If
+    End If
+    SetError "[GetVBAProjectBinBytes] ZipFldr failed for: " & OfficePath
+  End If
+
+End Function
+
+' NB: PowerPoint stores VBA inside a VbaProjectStg record (recType &H1011) in the
+' "PowerPoint Document" stream. recInstance 0 is raw CFB and instance 1 is zlib.
+Private Function LoadFromLegacyPowerPoint(ByVal FilePath As String) As Boolean
+  On Error GoTo Failed
+  LoadFromLegacyPowerPoint = False
+
+  Dim outerStorage As stdole.IUnknown
+  Dim pptStream    As stdole.IUnknown
+  Set outerStorage = StorageOpenFile(FilePath)
+  If outerStorage Is Nothing Then Exit Function
+
+  Set pptStream = StorageOpenStream(outerStorage, "PowerPoint Document")
+  If pptStream Is Nothing Then
+    SetError "[LoadFromLegacyPowerPoint] Missing 'PowerPoint Document' stream"
+    Exit Function
+  End If
+
+  Dim pptData() As Byte
+  pptData = StreamReadBytes(pptStream)
+  If ByteCount(pptData) < 8 Then
+    SetError "[LoadFromLegacyPowerPoint] 'PowerPoint Document' stream is empty or invalid"
+    Exit Function
+  End If
+
+  Dim lb As Long
+  Dim ub As Long
+  lb = LBound(pptData)
+  ub = UBound(pptData)
+
+  Dim pos            As Long
+  Dim recVerInstance As Long
+  Dim recVer         As Long
+  Dim recInstance    As Long
+  Dim recLenValue    As Double
+  Dim recLen         As Long
+  Dim payloadPos     As Long
+  Dim expectedValue  As Double
+  Dim ExpectedSize   As Long
+  Dim compressedSize As Long
+  Dim candidateReady As Boolean
+  Dim candidate()    As Byte
+  Dim zlibData()     As Byte
+
+  For pos = lb To ub - 7
+    If pptData(pos + 2) = (PPT_VBA_PROJECT_STG And &HFF&) And pptData(pos + 3) = ((PPT_VBA_PROJECT_STG \ 256&) And &HFF&) Then
+      recVerInstance = ReadUInt16LE(pptData, pos)
+      recVer = recVerInstance And &HF&
+      recInstance = recVerInstance \ &H10&
+
+      If recVer = 0 And (recInstance = 0 Or recInstance = 1) Then
+        recLenValue = ReadUInt32LE(pptData, pos + 4)
+        payloadPos = pos + 8
+
+        If recLenValue >= 0# And recLenValue <= MAX_EMBEDDED_PROJECT_SIZE And recLenValue <= CDbl(ub - payloadPos + 1) Then
+
+          recLen = CLng(recLenValue)
+          candidateReady = False
+          Erase candidate
+
+          Select Case recInstance
+            Case 0
+              If recLen >= 8 Then
+                If HasCompoundFileSignatureAt(pptData, payloadPos) Then
+                  candidate = SliceBytes(pptData, payloadPos, recLen)
+                  candidateReady = (ByteCount(candidate) = recLen)
+                End If
+              End If
+
+            Case 1
+              ' Four-byte decompressed-size prefix followed by PowerPoint's
+              ' zlib-compatible DEFLATE payload.
+              If recLen >= 12 Then
+                expectedValue = ReadUInt32LE(pptData, payloadPos)
+                compressedSize = recLen - 4
+
+                If expectedValue >= 8# And expectedValue <= MAX_EMBEDDED_PROJECT_SIZE And compressedSize >= 8 Then
+                  ExpectedSize = CLng(expectedValue)
+                  zlibData = SliceBytes(pptData, payloadPos + 4, compressedSize)
+                  If ByteCount(zlibData) = compressedSize Then
+                    candidateReady = TryZlibInflate(zlibData, ExpectedSize, candidate)
+                  End If
+                  Erase zlibData
+                End If
+              End If
+          End Select
+
+          If candidateReady Then
+            If IsCompoundFileBytes(candidate) Then
+              If LoadFromByteArray(candidate) Then
+                LoadFromLegacyPowerPoint = True
+                LogMessage xrayInfo, "Legacy PowerPoint VBA project found (" & IIf(recInstance = 0, "raw", "compressed") & ") at stream offset " & pos
+                Exit Function
+              End If
+            End If
+          End If
+        End If
+      End If
+    End If
+  Next pos
+
+  Reset
+  SetError "[LoadFromLegacyPowerPoint] No valid VBA project found"
+  Exit Function
+
+Failed:
+  Dim errorNumber As Long
+  Dim errorDescription As String
+  errorNumber = Err.Number
+  errorDescription = Err.Description
+  Reset
+  SetError "[LoadFromLegacyPowerPoint] Error " & errorNumber & " - " & errorDescription
+End Function
+
+' Inflates the zlib-compatible payload used by compressed VbaProjectStg
+' records in legacy PowerPoint files. Uses archiveint.dll under the hood.
+Private Function TryZlibInflate(ByRef zlibData() As Byte, ByVal ExpectedSize As Long, ByRef result() As Byte) As Boolean
+  Dim archive       As LongPtr
+  Dim entry         As LongPtr
+  Dim blockPtr      As LongPtr
+  Dim blockSizePtr  As LongPtr
+  #If Win64 Then
+    Dim blockOffset As LongLong
+  #Else
+    Dim blockOffset As Currency
+  #End If
+  Dim blockOffsetValue As Long
+  Dim nextOffset    As Long
+  Dim status        As Long
+  Dim opened        As Boolean
+  Dim succeeded     As Boolean
+  Dim work()        As Byte
+  Dim gzipData()    As Byte
+
+  On Error GoTo Failed
+  Erase result
+
+  Dim zlibSize As Long
+  Dim lb       As Long
+  zlibSize = ByteCount(zlibData)
+  If zlibSize < 8 Then Exit Function
+  If ExpectedSize < 8 Or ExpectedSize > MAX_EMBEDDED_PROJECT_SIZE Then Exit Function
+  lb = LBound(zlibData)
+
+  Dim cmf As Long
+  Dim flg As Long
+  cmf = zlibData(lb)
+  flg = zlibData(lb + 1)
+
+  If (cmf And &HF&) <> 8 Then Exit Function
+  If (cmf \ &H10&) > 7 Then Exit Function
+  If ((cmf * 256&) + flg) Mod 31 <> 0 Then Exit Function
+  If (flg And &H20&) <> 0 Then Exit Function
+
+  ' Preserve every byte after the zlib header. This is intentional: the
+  ' working PPT variant does not expose a dependable four-byte Adler trailer.
+  Dim rawDeflateSize As Long
+  rawDeflateSize = zlibSize - 2
+  If rawDeflateSize <= 0 Then Exit Function
+
+  Dim bodySize As Long
+  bodySize = rawDeflateSize + 5
+  ReDim gzipData(0 To GZIP_HEADER_SIZE + bodySize + GZIP_TRAILER_SIZE - 1)
+  gzipData(0) = &H1F
+  gzipData(1) = &H8B
+  gzipData(2) = &H8
+  gzipData(9) = &HFF
+  CopyMemory VarPtr(gzipData(GZIP_HEADER_SIZE)), VarPtr(zlibData(lb + 2)), rawDeflateSize
+
+  Dim finalBlock As Long
+  finalBlock = GZIP_HEADER_SIZE + rawDeflateSize
+  gzipData(finalBlock) = &H1
+  gzipData(finalBlock + 1) = &H0
+  gzipData(finalBlock + 2) = &H0
+  gzipData(finalBlock + 3) = &HFF
+  gzipData(finalBlock + 4) = &HFF
+
+  archive = archive_read_new()
+  If archive = 0 Then GoTo CleanUp
+  If archive_read_support_format_raw(archive) <> ARCHIVE_OK Then GoTo CleanUp
+  If archive_read_support_filter_all(archive) <> ARCHIVE_OK Then GoTo CleanUp
+  If archive_read_open_memory(archive, VarPtr(gzipData(0)), ByteCount(gzipData)) <> ARCHIVE_OK Then GoTo CleanUp
+  opened = True
+  If archive_read_next_header(archive, entry) <> ARCHIVE_OK Then GoTo CleanUp
+
+  ReDim work(0 To ExpectedSize - 1)
+
+  Do
+    blockPtr = 0
+    blockSizePtr = 0
+    blockOffset = 0
+    status = archive_read_data_block(archive, blockPtr, blockSizePtr, blockOffset)
+
+    If status = ARCHIVE_EOF Then Exit Do
+    If blockPtr = 0 Or blockSizePtr <= 0 Then Exit Do
+
+    #If Win64 Then
+      If blockOffset < 0 Or blockOffset > ExpectedSize Then GoTo CleanUp
+      blockOffsetValue = CLng(blockOffset)
+    #Else
+      If blockOffset < 0@ Or blockOffset * 10000@ > ExpectedSize Then GoTo CleanUp
+      blockOffsetValue = CLng(blockOffset * 10000@)
+    #End If
+
+    If blockOffsetValue <> nextOffset Then GoTo CleanUp
+    If blockSizePtr > ExpectedSize - blockOffsetValue Then GoTo CleanUp
+
+    CopyMemory VarPtr(work(0)) + blockOffsetValue, blockPtr, blockSizePtr
+    nextOffset = blockOffsetValue + CLng(blockSizePtr)
+
+    If nextOffset = ExpectedSize Then Exit Do
+    If status <> ARCHIVE_OK Then Exit Do
+  Loop
+
+  If nextOffset <> ExpectedSize Then GoTo CleanUp
+  succeeded = True
+
+CleanUp:
+  On Error Resume Next
+  If opened Then archive_read_close archive
+  If archive <> 0 Then archive_read_free archive
+  On Error GoTo 0
+
+  If succeeded Then
+    result = work
+    TryZlibInflate = True
+  Else
+    Erase result
+  End If
+  Exit Function
+
+Failed:
+  SetError "[TryZlibInflate] Error " & Err.Number & " - " & Err.Description
+  Resume CleanUp
+End Function
+
+Private Sub LoadFromStorage(ByVal topStg As stdole.IUnknown, ByVal ext As String)
+  
+  On Error GoTo Failed
+  Reset
+  If topStg Is Nothing Then
+    SetError "[LoadFromStorage] Invalid storage object"
+    Exit Sub
+  End If
+
+  Dim topItems As Collection
+  Set topItems = StorageEnumElements(topStg)
+  Set m_StorageTree = BuildTreeNodes(topStg, topItems)
+
+  Dim layout As CFBLayout
+  layout = GetCFBLayout(ext)
+  Dim keepAlive As New Collection
   Dim vbaStg As stdole.IUnknown
-  Set vbaStg = StorageOpenStorage(topStg, "VBA")
+  Set vbaStg = StorageNavigate(topStg, layout.VBAPath, keepAlive)
+
+  If vbaStg Is Nothing Then
+    SetError "[LoadFromStorage] VBA storage not found at '" & layout.VBAPath & "'"
+    GoTo CleanUp
+  End If
+
+  Dim vbaItems As Collection
+  Set vbaItems = StorageEnumElements(vbaStg)
+
+  If Not CollectionContains(vbaItems, "dir") Then
+    SetError "[LoadFromStorage] Missing 'dir' stream in '" & layout.VBAPath & "'"
+    GoTo CleanUp
+  End If
 
   Dim dirBytes()  As Byte
   Dim decompDir() As Byte
   dirBytes = StreamReadBytes(StorageOpenStream(vbaStg, "dir"))
+
+  If ByteCount(dirBytes) < 11 Then
+    SetError "[LoadFromStorage] 'dir' stream too small"
+    GoTo CleanUp
+  End If
+
   decompDir = DecompressStream(dirBytes)
-  ParseDirStream decompDir        ' Parse module records + codepage
+  If ByteCount(decompDir) < 11 Then
+    SetError "[LoadFromStorage] Decompressed 'dir' stream is invalid"
+    GoTo CleanUp
+  End If
 
-  Dim ProjectBytes() As Byte      ' Parse PROJECT stream (not compressed)
-  ProjectBytes = StreamReadBytes(StorageOpenStream(topStg, "PROJECT"))
-  ProcessProject BytesToString(ProjectBytes, 0, UBound(ProjectBytes) + 1, m_Project.CodePage)
+  ParseDirStream decompDir
 
-  If m_Project.ModuleCount = 0 Then Debug.Print "No modules found in dir stream": Exit Sub
+  Dim ProjectBytes() As Byte
+  ProjectBytes = ReadProjectStream(topStg, layout.projectPath, keepAlive)
+  If ByteCount(ProjectBytes) > 0 Then
+    ProcessProject BytesToString(ProjectBytes, LBound(ProjectBytes), ByteCount(ProjectBytes), m_Project.CodePage)
+  End If
+
+  If m_Project.ModuleCount = 0 Then
+    SetError "[LoadFromStorage] No modules found in dir stream"
+    GoTo CleanUp
+  End If
 
   Dim i As Long
   For i = 1 To m_Project.ModuleCount
-    ReadModuleSource vbaStg, i
-  Next
+    ReadModuleSource vbaStg, vbaItems, i
+  Next i
 
-  Debug.Print "Project loaded: " & m_Project.Name & " (" & m_Project.ModuleCount & " modules)"
+  LogMessage xrayInfo, "Project loaded: " & m_Project.Name & " (" & m_Project.ModuleCount & " modules)"
+
+CleanUp:
+  On Error Resume Next
+  Set keepAlive = Nothing
+  Set vbaStg = Nothing
+  Exit Sub
+
+Failed:
+  Dim errorNumber As Long
+  Dim errorDescription As String
+  errorNumber = Err.Number
+  errorDescription = Err.Description
+  Reset
+  SetError "[LoadFromStorage] Error " & errorNumber & " - " & errorDescription
+  Resume CleanUp
 End Sub
 
-Private Sub ReadModuleSource(ByRef vbaStg As stdole.IUnknown, ByVal Index As Long)
-  With m_Project.Modules(Index)
+Private Function GetCFBLayout(ByVal ext As String) As CFBLayout
+  Dim layout As CFBLayout
+  Select Case LCase$(ext)
+    Case "xls", "xla", "xlt"
+      layout.VBAPath = "_VBA_PROJECT_CUR\VBA"
+      layout.projectPath = "_VBA_PROJECT_CUR\PROJECT"
+    Case "doc", "dot"
+      layout.VBAPath = "Macros\VBA"
+      layout.projectPath = "Macros\PROJECT"
+    Case "pub"
+      layout.VBAPath = "VBA\VBA"
+      layout.projectPath = "VBA\PROJECT"
+    Case "otm"
+      layout.VBAPath = "OutlookVbaData\VBA"
+      layout.projectPath = "OutlookVbaData\PROJECT"
+    Case Else
+      layout.VBAPath = "VBA"
+      layout.projectPath = "PROJECT"
+  End Select
+  GetCFBLayout = layout
+End Function
+
+Private Function StorageNavigate(ByRef rootStg As stdole.IUnknown, ByVal path As String, ByRef keepAlive As Collection) As stdole.IUnknown
+
+  Dim parts()     As String
+  Dim current     As stdole.IUnknown
+  Dim next_stg    As stdole.IUnknown
+  Dim walkedPath  As String
+  Dim pathKey     As String
+  Dim i           As Long
+
+  parts = Split(path, "\")
+  Set current = rootStg
+
+  For i = 0 To UBound(parts)
+    If Len(parts(i)) = 0 Then GoTo Failed
+
+    If Len(walkedPath) = 0 Then
+      walkedPath = parts(i)
+    Else
+      walkedPath = walkedPath & "\" & parts(i)
+    End If
+
+    pathKey = "stg:" & LCase$(walkedPath)
+
+    Set next_stg = Nothing
+    On Error Resume Next
+    Set next_stg = keepAlive.item(pathKey)
+    Err.Clear
+    On Error GoTo 0
+
+    If next_stg Is Nothing Then
+      Set next_stg = StorageOpenStorage(current, parts(i))
+
+      If next_stg Is Nothing Then
+        LogMessage xrayDebug, "[StorageNavigate] Could not open '" & parts(i) & "' in path '" & path & "'"
+        GoTo Failed
+      End If
+
+      keepAlive.Add next_stg, pathKey
+    End If
+
+    Set current = next_stg
+  Next i
+
+  Set StorageNavigate = current
+  Exit Function
+
+Failed:
+  Set StorageNavigate = Nothing
+End Function
+
+Private Function ReadProjectStream(ByRef rootStg As stdole.IUnknown, ByVal projectPath As String, ByRef keepAlive As Collection) As Byte()
+  
+  Dim lastSlash  As Long
+  Dim streamName As String
+  Dim parentPath As String
+  Dim parentStg  As stdole.IUnknown
+
+  lastSlash = InStrRev(projectPath, "\")
+  streamName = VBA.Mid$(projectPath, lastSlash + 1)
+
+  If lastSlash > 0 Then
+    parentPath = Left$(projectPath, lastSlash - 1)
+    Set parentStg = StorageNavigate(rootStg, parentPath, keepAlive)
+  Else
+    Set parentStg = rootStg
+  End If
+
+  If parentStg Is Nothing Then Exit Function
+
+  Dim pStm As stdole.IUnknown
+  Set pStm = StorageOpenStream(parentStg, streamName)
+  If pStm Is Nothing Then
+    LogMessage xrayWarning, "[ReadProjectStream] '" & projectPath & "' not found - module types may be unrefined"
+    Exit Function
+  End If
+
+  ReadProjectStream = StreamReadBytes(pStm)
+End Function
+
+Private Sub ReadModuleSource(ByRef vbaStg As stdole.IUnknown, ByRef vbaItems As Collection, ByVal index As Long)
+  
+  If vbaStg Is Nothing Then Exit Sub
+  If index < 1 Or index > m_Project.ModuleCount Then Exit Sub
+
+  With m_Project.Modules(index)
+    If Len(.streamName) = 0 Then Exit Sub
+    If Not CollectionContains(vbaItems, .streamName) Then
+      SetError "[ReadModuleSource] Stream '" & .streamName & "' not found for module " & .Name
+      Exit Sub
+    End If
+
+    Dim pStm    As stdole.IUnknown
+    Set pStm = StorageOpenStream(vbaStg, .streamName)
+    If pStm Is Nothing Then
+      SetError "[ReadModuleSource] Could not open stream '" & .streamName & "' for module " & .Name
+      Exit Sub
+    End If
+
     Dim modBytes() As Byte
-    modBytes = StreamReadBytes(StorageOpenStream(vbaStg, .StreamName))
+    modBytes = StreamReadBytes(pStm)
+    Set pStm = Nothing
+
+    If ByteCount(modBytes) = 0 Then Exit Sub
+    If .offset > UBound(modBytes) Then
+      SetError "[ReadModuleSource] Offset (" & .offset & ") exceeds stream length for module " & .Name
+      Exit Sub
+    End If
 
     Dim compLen As Long
-    compLen = UBound(modBytes) - .Offset + 1
+    compLen = UBound(modBytes) - .offset + 1
     If compLen <= 0 Then Exit Sub
 
     Dim compSource() As Byte
-    Dim data()       As Byte
-    compSource = SliceBytes(modBytes, .Offset, compLen)
+    compSource = SliceBytes(modBytes, .offset, compLen)
+
+    Dim data() As Byte
     data = DecompressStream(compSource)
-    .SourceCode = BytesToString(data, 0, UBound(data) + 1, m_Project.CodePage)
+    If ByteCount(data) = 0 Then Exit Sub
+    .SourceCode = BytesToString(data, LBound(data), ByteCount(data), m_Project.CodePage)
   End With
 End Sub
 
-Private Sub WriteModule(ByVal Index As Long, ByVal ExportPath As String)
-    With m_Project.Modules(Index)
-        Dim Extension As String
-        Dim SubFolder As String
-        
-        Select Case .ModType
-            Case modStandard
-                Extension = ".bas"
-                SubFolder = "01_Standard"
-            Case modClass
-                Extension = ".cls"
-                SubFolder = "02_Class"
-            Case modDocument
-                Extension = ".cls"
-                SubFolder = "03_Document"
-            Case modDesigner
-                Extension = ".frm"
-                SubFolder = "04_Designer"
-            Case Else
-                Extension = ".txt"
-                SubFolder = "05_Other"
-        End Select
-        
-        Dim TargetPath As String
-        TargetPath = ExportPath & SubFolder & "\"
-        If Not FolderExists(TargetPath) Then CreateFolderRecursive TargetPath
-        
-        WriteFile TargetPath & .Name & Extension, BytesToBytes(.SourceCode, m_Project.CodePage)
-        
-        Debug.Print "Exported: " & SubFolder & "\" & .Name & Extension
-    End With
-End Sub
+Private Function WriteModule(ByVal index As Long, ByVal ExportPath As String) As Boolean
+  
+  With m_Project.Modules(index)
+    Dim Extension   As String
+    Dim SubFolder   As String
+    Dim header      As String
+    header = vbNullString
+
+    Select Case .ModType
+      Case modStandard
+        Extension = ".bas"
+        SubFolder = "01_Standard"
+      Case modClass
+        Extension = ".cls"
+        SubFolder = "02_Class"
+        header = "VERSION 1.0 CLASS" & vbCrLf & _
+                 "BEGIN" & vbCrLf & _
+                 "  MultiUse = -1  'True" & vbCrLf & _
+                 "END" & vbCrLf & vbCrLf
+      Case modDocument
+        Extension = ".cls"
+        SubFolder = "03_Document"
+      Case modDesigner
+        Extension = ".frm"
+        SubFolder = "04_Designer"
+      Case Else
+        Extension = ".txt"
+        SubFolder = "05_Other"
+    End Select
+
+    Dim TargetPath As String
+    ExportPath = VBA.Trim$(ExportPath)
+    If Right$(ExportPath, 1) <> "\" Then ExportPath = ExportPath & "\"
+    TargetPath = ExportPath & SubFolder & "\"
+    
+    If Not FolderExists(TargetPath) Then
+      If Not CreateFolderRecursive(TargetPath) Then
+        SetError "[WriteModule] Could not create folder: " & TargetPath
+        Exit Function
+      End If
+    End If
+
+    Dim fileData() As Byte
+    fileData = StringToBytes(header & .SourceCode, m_Project.CodePage)
+    If ByteCount(fileData) = 0 Then
+      SetError "[WriteModule] No output data produced for " & .Name
+      Exit Function
+    End If
+
+    If Not WriteFile(TargetPath & .Name & Extension, fileData) Then
+      SetError "[WriteModule] Failed to write " & TargetPath & .Name & Extension
+      Exit Function
+    End If
+
+    LogMessage xrayInfo, "[Exported] " & SubFolder & "\" & .Name & Extension
+    WriteModule = True
+  End With
+
+End Function
 
 Private Sub ParseDirStream(ByRef data() As Byte)
 
@@ -487,74 +1123,67 @@ Private Sub ParseDirStream(ByRef data() As Byte)
 
   m_Project.CodePage = 1252
 
-  Dim Pos        As Long: Pos = 0
+  Dim pos        As Long: pos = 0
   Dim RecordId   As Long
   Dim RecordSize As Long
 
-  Do While Pos < UBound(data) - 5
-    RecordId = CLng(data(Pos)) Or (CLng(data(Pos + 1)) * 256&)
+  Do While pos < UBound(data) - 5
+    RecordId = CLng(data(pos)) Or (CLng(data(pos + 1)) * 256&)
 
-    ' MS-OVBA: 2.3.4.2.1.5 PROJECTCODEPAGE (0x0003)
+    ' MS-OVBA 2.3.4.2.1.5 PROJECTCODEPAGE (0x0003)
     If RecordId = &H3 Then
-      RecordSize = CLng(data(Pos + 2)) Or (CLng(data(Pos + 3)) * 256&) Or (CLng(data(Pos + 4)) * 65536) Or (CLng(data(Pos + 5)) * 16777216)
+      RecordSize = CLng(data(pos + 2)) Or (CLng(data(pos + 3)) * 256&) Or _
+                   (CLng(data(pos + 4)) * 65536) Or (CLng(data(pos + 5)) * 16777216)
       If RecordSize = 2 Then
-        m_Project.CodePage = CLng(data(Pos + 6)) Or (CLng(data(Pos + 7)) * 256&)
-        Debug.Print "Project CodePage: " & m_Project.CodePage
+        m_Project.CodePage = CLng(data(pos + 6)) Or (CLng(data(pos + 7)) * 256&)
       End If
     End If
 
-    ' Scan for the MODULENAME header (0x0019)
+    ' Scan for MODULENAME record (0x0019) which opens each module block
     If RecordId = &H19 Then
-      RecordSize = CLng(data(Pos + 2)) Or (CLng(data(Pos + 3)) * 256&) Or (CLng(data(Pos + 4)) * 65536) Or (CLng(data(Pos + 5)) * 16777216)
+      RecordSize = CLng(data(pos + 2)) Or (CLng(data(pos + 3)) * 256&) Or _
+                   (CLng(data(pos + 4)) * 65536) Or (CLng(data(pos + 5)) * 16777216)
       If RecordSize > 0 And RecordSize < 256 Then
         Dim modRec As ModuleRecord
-        modRec.Name = ""
-        modRec.StreamName = ""
-        modRec.Offset = 0
-        modRec.ModType = modOther
-        modRec.IsForm = False
-        modRec.SourceCode = ""
 
         Dim modPos As Long
-        modPos = Pos
+        modPos = pos
 
         Do While modPos < UBound(data) - 5
-          Dim mId As Long, mSize As Long
-          mId = CLng(data(modPos)) Or (CLng(data(modPos + 1)) * 256&)
-          mSize = CLng(data(modPos + 2)) Or (CLng(data(modPos + 3)) * 256&) Or (CLng(data(modPos + 4)) * 65536) Or (CLng(data(modPos + 5)) * 16777216)
+          Dim m_Id   As Long
+          Dim mSize As Long
+          m_Id = CLng(data(modPos)) Or (CLng(data(modPos + 1)) * 256&)
+          mSize = CLng(data(modPos + 2)) Or (CLng(data(modPos + 3)) * 256&) Or _
+                  (CLng(data(modPos + 4)) * 65536) Or (CLng(data(modPos + 5)) * 16777216)
           modPos = modPos + 6
           If modPos + mSize > UBound(data) + 1 Then Exit Do
 
-          If mId = &H19 Then        ' MODULENAME
-            modRec.Name = BytesToString(data, modPos, mSize, m_Project.CodePage)
-          ElseIf mId = &H1A Then    ' MODULESTREAMNAME
-            modRec.StreamName = BytesToString(data, modPos, mSize, m_Project.CodePage)
-          ElseIf mId = &H21 Then    ' standard module
-            modRec.ModType = modStandard
-          ElseIf mId = &H22 Then    ' class / designer / document (refined by ProcessProject)
-            modRec.ModType = modClass
-          ElseIf mId = &H31 Then    ' MODULEOFFSET
-            modRec.Offset = CLng(data(modPos)) Or (CLng(data(modPos + 1)) * 256&) Or (CLng(data(modPos + 2)) * 65536) Or (CLng(data(modPos + 3)) * 16777216)
-          ElseIf mId = &H2B Then    ' MODULETERMINATOR
-            modPos = modPos + mSize
-            Exit Do
-          End If
+          Select Case m_Id
+            Case &H19: modRec.Name = BytesToString(data, modPos, mSize, m_Project.CodePage)
+            Case &H1A: modRec.streamName = BytesToString(data, modPos, mSize, m_Project.CodePage)
+            Case &H21: modRec.ModType = modStandard
+            Case &H22: modRec.ModType = modClass      ' refined later by ProcessProject
+            Case &H31
+              modRec.offset = CLng(data(modPos)) Or (CLng(data(modPos + 1)) * 256&) Or _
+                              (CLng(data(modPos + 2)) * 65536) Or (CLng(data(modPos + 3)) * 16777216)
+            Case &H2B   ' MODULETERMINATOR
+              modPos = modPos + mSize
+              Exit Do
+          End Select
           modPos = modPos + mSize
         Loop
 
-        If Len(modRec.StreamName) > 0 And modRec.Offset > 0 Then
-          If count = UBound(tempList) Then
-            ReDim Preserve tempList(0 To count + 63)
-          End If
+        If Len(modRec.streamName) > 0 Then
+          If count = UBound(tempList) Then ReDim Preserve tempList(0 To count + 63)
           count = count + 1
           tempList(count) = modRec
         End If
-        Pos = modPos
+        pos = modPos
         GoTo ContinueScan
       End If
     End If
 
-    Pos = Pos + 1
+    pos = pos + 1
 ContinueScan:
   Loop
 
@@ -563,149 +1192,328 @@ ContinueScan:
     Dim i As Long
     For i = 1 To count
       m_Project.Modules(i) = tempList(i)
-    Next
+    Next i
     m_Project.ModuleCount = count
   End If
 End Sub
 
 Private Sub ProcessProject(ByVal StreamString As String)
-  Dim Lines()  As String
-  Dim parts()  As String
+  StreamString = Replace(StreamString, vbCr, vbLf)
+  StreamString = Replace(StreamString, vbLf & vbLf, vbLf)
+
+  Dim lines()  As String
   Dim Key      As String
   Dim modName  As String
   Dim idx      As Long
   Dim i        As Long
+  Dim eqPos    As Long
 
-  Lines = Split(StreamString, vbCrLf)
-  Dim Line As Variant
-  For Each Line In Lines
-    Line = Trim$(Line)
-    If Len(Line) = 0 Then GoTo NextLine
-    If Left$(Line, 1) = "'" Then GoTo NextLine
-    parts = Split(Line, "=")
-    If UBound(parts) < 1 Then GoTo NextLine
-    Key = LCase$(Trim$(parts(0)))
-    modName = Trim$(parts(1))
+  lines = Split(StreamString, vbLf)
+  Dim line As Variant
+  For Each line In lines
+    line = Trim$(line)
+    If Len(line) = 0 Then GoTo NextLine
+    If Left$(line, 1) = "'" Then GoTo NextLine
+
+    eqPos = InStr(line, "=")
+    If eqPos < 2 Then GoTo NextLine
+    Key = LCase$(Trim$(Left$(line, eqPos - 1)))
+    modName = Trim$(VBA.Mid$(line, eqPos + 1))
+
     If Left$(modName, 1) = Chr(34) Then modName = Split(modName, Chr(34))(1)
-    
-    ' Strip any /& annotation (e.g. "ThisWorkbook/&H00000000")
-    Dim slashPos As Long
-    slashPos = InStr(modName, "/")
-    If slashPos > 0 Then modName = Left$(modName, slashPos - 1)
-
     Select Case Key
-    Case "name"
-      m_Project.Name = modName
-      GoTo NextLine
-    Case "dpb"
-    ' Per MS-OVBA 2.3.1.16: DPB value length of 16 hex chars = Length of 1 = no password
-    ' A password protected project will have a DPB value of 58 hex chars (Length = 29)
-      m_Project.IsPasswordProtected = (Len(modName) > 16)
-      GoTo NextLine
+      Case "name"
+        m_Project.Name = modName
+        GoTo NextLine
+      Case "description"
+        m_Project.Description = modName
+        GoTo NextLine
+      Case "dpb"
+        Dim passwordProtected As Boolean
+        If CheckProjectLock(modName, passwordProtected) Then
+          m_Project.IsPasswordProtected = passwordProtected
+        Else
+          ' Apparently, a valid unprotected DPB can contain 0 to 3 ignored bytes
+          ' and is (at most) 22 hex characters.
+          m_Project.IsPasswordProtected = (Len(modName) > 22)
+        End If
+        GoTo NextLine
     End Select
 
-    ' Find module by name - linear scan. I originally used a dictionary object
-    ' but it felt overdone.
+    If Key = "document" Then
+      Dim slashPos As Long
+      slashPos = InStr(modName, "/")
+      If slashPos > 0 Then modName = Left$(modName, slashPos - 1)
+    End If
+
     idx = 0
     For i = 1 To m_Project.ModuleCount
-      If LCase$(m_Project.Modules(i).Name) = LCase$(modName) Or LCase$(m_Project.Modules(i).StreamName) = LCase$(modName) Then
-        idx = i
-        Exit For
+      If LCase$(m_Project.Modules(i).Name) = LCase$(modName) Or _
+         LCase$(m_Project.Modules(i).streamName) = LCase$(modName) Then
+        idx = i: Exit For
       End If
-    Next
+    Next i
     If idx = 0 Then GoTo NextLine
 
     With m_Project.Modules(idx)
       Select Case Key
-      Case "document"
-        .ModType = modDocument
-        .IsForm = False
-      Case "baseclass"
-        .ModType = modDesigner
-        .IsForm = True
-      Case "class"
-        If .ModType = modOther Then .ModType = modClass
-      Case "module"
-        If .ModType = modOther Then .ModType = modStandard
+        Case "document"
+          .ModType = modDocument
+          .IsForm = False
+        Case "baseclass"
+          .ModType = modDesigner
+          .IsForm = True
+        Case "class"
+          If .ModType = modOther Then .ModType = modClass
+        Case "module"
+          If .ModType = modOther Then .ModType = modStandard
       End Select
     End With
 NextLine:
   Next
 End Sub
 
-' ------------------------
-'  Storage/Stream helpers
-' ------------------------
+Private Function CheckProjectLock(ByVal encodedHex As String, ByRef isProtected As Boolean) As Boolean
+  CheckProjectLock = False
+  isProtected = False
+
+  encodedHex = VBA.Trim$(encodedHex)
+  If Len(encodedHex) < 16 Or (Len(encodedHex) And 1) <> 0 Then Exit Function
+  If Len(encodedHex) > 8192 Then Exit Function
+
+  Dim encrypted() As Byte
+  Dim byteLen     As Long
+  Dim i           As Long
+  Dim hi          As Long
+  Dim lo          As Long
+  byteLen = Len(encodedHex) \ 2
+  ReDim encrypted(0 To byteLen - 1)
+
+  For i = 0 To byteLen - 1
+    hi = HexNibble(AscW(VBA.Mid$(encodedHex, (i * 2) + 1, 1)))
+    lo = HexNibble(AscW(VBA.Mid$(encodedHex, (i * 2) + 2, 1)))
+    If hi < 0 Or lo < 0 Then Exit Function
+    encrypted(i) = CByte((hi * 16) Or lo)
+  Next i
+
+  Dim seed          As Long
+  Dim Version       As Long
+  Dim projectKey    As Long
+  Dim ignoredLength As Long
+  seed = encrypted(0)
+  Version = seed Xor encrypted(1)
+  If Version <> 2 Then Exit Function
+  projectKey = seed Xor encrypted(2)
+  ignoredLength = (seed And 6) \ 2
+
+  Dim pos              As Long
+  Dim encryptedByte1   As Long
+  Dim encryptedByte2   As Long
+  Dim unencryptedByte1 As Long
+  Dim decodedByte      As Long
+  encryptedByte1 = encrypted(2)
+  encryptedByte2 = encrypted(1)
+  unencryptedByte1 = projectKey
+  pos = 3
+
+  If pos + ignoredLength + 4 > byteLen Then Exit Function
+  For i = 1 To ignoredLength
+    decodedByte = DecodeDataByte(encrypted(pos), encryptedByte1, encryptedByte2, unencryptedByte1)
+    pos = pos + 1
+  Next i
+
+  Dim dataLengthValue As Double
+  dataLengthValue = 0#
+  For i = 0 To 3
+    decodedByte = DecodeDataByte(encrypted(pos), encryptedByte1, encryptedByte2, unencryptedByte1)
+    dataLengthValue = dataLengthValue + CDbl(decodedByte) * (256# ^ i)
+    pos = pos + 1
+  Next i
+
+  If dataLengthValue < 1# Or dataLengthValue > CDbl(byteLen - pos) Then Exit Function
+  If dataLengthValue <> CDbl(byteLen - pos) Then Exit Function
+
+  Dim firstDataByte As Long
+  For i = 1 To CLng(dataLengthValue)
+    decodedByte = DecodeDataByte(encrypted(pos), encryptedByte1, _
+                                    encryptedByte2, unencryptedByte1)
+    If i = 1 Then firstDataByte = decodedByte
+    pos = pos + 1
+  Next i
+
+  isProtected = Not (dataLengthValue = 1# And firstDataByte = 0)
+  CheckProjectLock = True
+End Function
+
+Private Function DecodeDataByte(ByVal encryptedByte As Byte, ByRef encryptedByte1 As Long, ByRef encryptedByte2 As Long, ByRef unencryptedByte1 As Long) As Long
+  Dim decoded As Long
+  decoded = CLng(encryptedByte) Xor ((encryptedByte2 + unencryptedByte1) And &HFF&)
+
+  encryptedByte2 = encryptedByte1
+  encryptedByte1 = encryptedByte
+  unencryptedByte1 = decoded
+  DecodeDataByte = decoded
+End Function
+
+Private Function HexNibble(ByVal charCode As Long) As Long
+  Select Case charCode
+    Case 48 To 57:  HexNibble = charCode - 48
+    Case 65 To 70:  HexNibble = charCode - 55
+    Case 97 To 102: HexNibble = charCode - 87
+    Case Else:      HexNibble = -1
+  End Select
+End Function
+
+Private Function BuildTreeNodes(ByRef stg As stdole.IUnknown, ByRef items As Collection) As Collection
+  Dim nodes As New Collection
+  Dim entry As Variant
+
+  For Each entry In items
+    Dim node As Object
+    Set node = CreateObject("Scripting.Dictionary")
+    node("name") = entry("name")
+    node("type") = entry("type")
+    node("size") = entry("size")
+
+    If entry("type") = STGTY_STORAGE Then
+      Dim childStg   As stdole.IUnknown
+      Dim childItems As Collection
+      On Error Resume Next
+      Set childStg = StorageOpenStorage(stg, entry("name"))
+      On Error GoTo 0
+      If Not childStg Is Nothing Then
+        Set childItems = StorageEnumElements(childStg)
+        Set node("children") = BuildTreeNodes(childStg, childItems)
+        Set childStg = Nothing
+      Else
+        Set node("children") = New Collection
+      End If
+    End If
+
+    nodes.Add node
+  Next entry
+
+  Set BuildTreeNodes = nodes
+End Function
+
+Private Sub TreeNodeRender(ByRef nodes As Collection, ByVal prefix As String, ByRef output As String)
+  Dim i      As Long
+  Dim node   As Object
+  Dim isLast As Boolean
+  Dim branch As String
+  Dim childPfx As String
+
+  i = 0
+  For Each node In nodes
+    i = i + 1
+    isLast = (i = nodes.count)
+    branch = IIf(isLast, "\-- ", "+-- ")
+    childPfx = prefix & IIf(isLast, "    ", "|   ")
+
+    Select Case node("type")
+      Case STGTY_STREAM
+        Dim col As String * 50
+        col = prefix & branch & EscapeName(node("name"))
+        output = output & col & CLng(node("size")) & " bytes" & vbCrLf
+      Case STGTY_STORAGE
+        output = output & prefix & branch & "[" & EscapeName(node("name")) & "]" & vbCrLf
+        If Not IsEmpty(node("children")) Then
+          If Not node("children") Is Nothing Then
+            TreeNodeRender node("children"), childPfx, output
+          End If
+        End If
+      Case Else
+        output = output & prefix & branch & EscapeName(node("name")) & "  (type=" & node("type") & ")" & vbCrLf
+    End Select
+  Next node
+End Sub
+
 Private Function StorageOpenFile(ByVal FilePath As String) As stdole.IUnknown
+  If Not IsCompoundFile(FilePath) Then
+    SetError "[StorageOpenFile] Not a Compound Document file: " & FilePath
+    Exit Function
+  End If
   Dim hr As Long
   hr = StgOpenStorage(StrPtr(FilePath), 0, STGM_READ Or STGM_SHARE_DENY_WRITE, 0, 0, StorageOpenFile)
-  If hr < 0 Then Debug.Print "StgOpenStorage - Error: " & hr
+  If hr < 0 Then SetError "[StgOpenStorage] Error: &H" & Hex(hr)
 End Function
 
 Private Function StorageOpenBytes(ByRef data() As Byte) As stdole.IUnknown
-  Dim hMem          As LongPtr
-  Dim lpMem         As LongPtr
-  Dim pLockBytesPtr As LongPtr
-  Dim hr            As Long
-  Dim dataSize      As LongPtr
+  Dim hMem     As LongPtr
+  Dim lpMem    As LongPtr
+  Dim lockBytes As stdole.IUnknown
+  Dim hr       As Long
+  Dim dataSize As LongPtr
 
-  dataSize = UBound(data) - LBound(data) + 1
+  dataSize = ByteCount(data)
+  If dataSize = 0 Then Exit Function
 
   hMem = GlobalAlloc(GMEM_MOVEABLE, dataSize)
-  If hMem = 0 Then Debug.Print "StorageOpenBytes - GlobalAlloc failed"
+  If hMem = 0 Then
+    SetError "[StorageOpenBytes] GlobalAlloc failed"
+    Exit Function
+  End If
 
   lpMem = GlobalLock(hMem)
   If lpMem = 0 Then
     GlobalFree hMem
-    Debug.Print "StorageOpenBytes - GlobalLock failed"
+    SetError "[StorageOpenBytes] GlobalLock failed"
     Exit Function
   End If
 
   CopyMemory lpMem, VarPtr(data(LBound(data))), dataSize
   GlobalUnlock hMem
 
-  hr = CreateILockBytesOnHGlobal(hMem, 1, pLockBytesPtr)
+  hr = CreateILockBytesOnHGlobal(hMem, 1, lockBytes)
   If hr < 0 Then
     GlobalFree hMem
-    Debug.Print "StorageOpenBytes - CreateILockBytesOnHGlobal failed: &H" & hex(hr)
+    SetError "[StorageOpenBytes] CreateILockBytesOnHGlobal failed: &H" & Hex(hr)
     Exit Function
   End If
 
-  hr = StgOpenStorageOnILockBytes(pLockBytesPtr, 0, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0, 0, StorageOpenBytes)
-  If hr < 0 Then Debug.Print "StorageOpenBytes - StgOpenStorageOnILockBytes failed: &H" & hex(hr)
+  hr = StgOpenStorageOnILockBytes(ObjPtr(lockBytes), 0, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0, 0, StorageOpenBytes)
+  If hr < 0 Then SetError "[StorageOpenBytes] StgOpenStorageOnILockBytes failed: &H" & Hex(hr)
+  Set lockBytes = Nothing
 End Function
 
-Private Function StorageOpenStorage(pStg As stdole.IUnknown, ByVal storageName As String) As stdole.IUnknown
+Private Function StorageOpenStorage(ByRef pStg As stdole.IUnknown, ByVal StorageName As String) As stdole.IUnknown
   Dim hr As Long
-  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_OpenStorage, StrPtr(storageName), 0&, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0&, 0&, VarPtr(StorageOpenStorage))
-  If hr < 0 Then Debug.Print "IStorage.OpenStorage - hResult: &H" & hex(hr)
+  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_OpenStorage, StrPtr(StorageName), 0&, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0&, 0&, VarPtr(StorageOpenStorage))
+  If hr < 0 Then LogMessage xrayDebug, "IStorage.OpenStorage(" & StorageName & ") - hResult: &H" & Hex(hr)
 End Function
 
-Private Function StorageOpenStream(pStg As stdole.IUnknown, ByVal StreamName As String) As stdole.IUnknown
+Private Function StorageOpenStream(ByRef pStg As stdole.IUnknown, ByVal streamName As String) As stdole.IUnknown
   Dim hr As Long
-  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_OpenStream, StrPtr(StreamName), 0&, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0&, VarPtr(StorageOpenStream))
-  If hr < 0 Then Debug.Print "IStorage.OpenStream - hResult: &H" & hex(hr)
+  hr = DispCallByVtbl(pStg, IStorageInterface.IStg_OpenStream, StrPtr(streamName), 0&, STGM_READ Or STGM_SHARE_EXCLUSIVE, 0&, VarPtr(StorageOpenStream))
+  If hr < 0 Then LogMessage xrayDebug, "IStorage.OpenStream(" & streamName & ") - hResult: &H" & Hex(hr)
 End Function
 
 Private Function StorageEnumElements(ByRef pStg As stdole.IUnknown) As Collection
-  Dim pEnum As stdole.IUnknown
-  Dim hr    As Long
-  Dim items As New Collection
-  Dim stat  As STATSTG
-  Dim entry As Object
+  Dim pEnum   As stdole.IUnknown
+  Dim hr      As Long
+  Dim items   As New Collection
+  Dim stat    As STATSTG
+  Dim entry   As Object
+  Dim fetched As Long
 
   hr = DispCallByVtbl(pStg, IStorageInterface.IStg_EnumElements, 0&, 0&, 0&, VarPtr(pEnum))
-  If hr < 0 Then Debug.Print "IStorage.EnumElements - hResult: &H" & hex(hr)
+  If hr < 0 Or pEnum Is Nothing Then
+    LogMessage xrayDebug, "IStorage.EnumElements - hResult: &H" & Hex(hr)
+    Set StorageEnumElements = items
+    Exit Function
+  End If
 
   Do
-    hr = DispCallByVtbl(pEnum, IEnumSTATSTGInterface.IEnum_Next, 1&, VarPtr(stat), 0&)
-    If hr <> 0 Then Exit Do
+    fetched = 0
+    hr = DispCallByVtbl(pEnum, IEnumSTATSTGInterface.IEnum_Next, 1&, VarPtr(stat), VarPtr(fetched))
+    If hr <> 0 Or fetched = 0 Then Exit Do
     If stat.pwcsName <> 0 Then
       Set entry = CreateObject("Scripting.Dictionary")
       entry("name") = PtrToString(stat.pwcsName)
       entry("type") = stat.dwType
-      entry("size") = CLng(stat.cbSize * 10000)
+      entry("size") = CLng(stat.cbSize * 10000#)
       CoTaskMemFree stat.pwcsName
+      stat.pwcsName = 0
       items.Add entry
     End If
   Loop
@@ -713,73 +1521,106 @@ Private Function StorageEnumElements(ByRef pStg As stdole.IUnknown) As Collectio
   Set StorageEnumElements = items
 End Function
 
-Private Function StorageExists(ByRef pStg As stdole.IUnknown, ByVal ElementName As String) As Boolean
-  Dim items As Collection
+Private Function CollectionContains(ByRef items As Collection, ByVal Name As String) As Boolean
   Dim entry As Variant
-  Set items = StorageEnumElements(pStg)
   For Each entry In items
-    If LCase$(entry("name")) = LCase$(ElementName) Then
-      StorageExists = True
+    If LCase$(entry("name")) = LCase$(Name) Then
+      CollectionContains = True
       Exit Function
     End If
   Next
 End Function
 
-Private Function StreamGetSize(ByRef pStm As stdole.IUnknown) As Long
-  Dim stat As STATSTG
-  Dim hr   As Long
-  hr = DispCallByVtbl(pStm, IStreamInterface.IStm_stat, VarPtr(stat), STATFLAG_NONAME)
-  If hr < 0 Then Debug.Print "IStream.Stat - hResult: &H" & hex(hr)
-  StreamGetSize = CLng(stat.cbSize * 10000)
-End Function
-
-Private Function StreamReadBytes(pStm As stdole.IUnknown) As Byte()
-  Dim Buffer() As Byte
+Private Function StreamReadBytes(ByRef pStm As stdole.IUnknown) As Byte()
+  Dim Buffer()          As Byte
   Dim chunk(0 To 32767) As Byte
-  Dim bytesRead As Long
-  Dim hr As Long
-  Dim total As Long
-  Dim oldUB As Long
+  Dim bytesRead         As Long
+  Dim hr                As Long
+  Dim total             As Long
+  Dim capacity          As Long
+  Dim required          As Long
+  Dim newCapacity       As Long
 
   If pStm Is Nothing Then Exit Function
 
-  hr = DispCallByVtbl(pStm, IStreamInterface.IStm_Seek, 0@, 0@, 0&, 0&)
+  hr = DispCallByVtbl(pStm, IStreamInterface.IStm_Seek, 0@, 0&, 0&)
+  If hr < 0 Then
+    LogMessage xrayDebug, "IStream.Seek - hResult: &H" & Hex(hr)
+    Exit Function
+  End If
 
   Do
     hr = DispCallByVtbl(pStm, IStreamInterface.IStm_Read, VarPtr(chunk(0)), 32768, VarPtr(bytesRead))
-    If hr < 0 Then Debug.Print "IStream.Read - hResult: &H" & hex(hr)
+    If hr < 0 Then
+      LogMessage xrayDebug, "IStream.Read - hResult: &H" & Hex(hr)
+      Erase Buffer
+      Exit Function
+    End If
     If bytesRead <= 0 Then Exit Do
 
-    If total = 0 Then
-      ReDim Buffer(0 To bytesRead - 1)
-    Else
-      oldUB = UBound(Buffer)
-      ReDim Preserve Buffer(0 To oldUB + bytesRead)
+    If total > &H7FFFFFFF - bytesRead Then
+      SetError "[StreamReadBytes] Stream is too large for a VBA byte array"
+      Erase Buffer
+      Exit Function
+    End If
+    required = total + bytesRead
+
+    If required > capacity Then
+      If capacity = 0 Then
+        newCapacity = 65536
+      Else
+        newCapacity = capacity
+      End If
+      Do While newCapacity < required
+        If newCapacity > &H3FFFFFFF Then
+          newCapacity = required
+          Exit Do
+        End If
+        newCapacity = newCapacity * 2
+      Loop
+
+      If capacity = 0 Then
+        ReDim Buffer(0 To newCapacity - 1)
+      Else
+        ReDim Preserve Buffer(0 To newCapacity - 1)
+      End If
+      capacity = newCapacity
     End If
 
     CopyMemory VarPtr(Buffer(total)), VarPtr(chunk(0)), bytesRead
-    total = total + bytesRead
+    total = required
   Loop
 
   If total > 0 Then
     ReDim Preserve Buffer(0 To total - 1)
-  Else
-    ReDim Buffer(0 To 0)
+    StreamReadBytes = Buffer
   End If
-
-  StreamReadBytes = Buffer
 End Function
 
-' LZ77 decompression
-' MS-OVBA: 2.4.1 Compression and Decompression
+' LZ77 decompression per MS-OVBA 2.4.1.
+Private Function DecompressStream(ByRef CompressedData() As Byte, Optional ByVal Silent As Boolean = False) As Byte()
+  Dim output()    As Byte
+  Dim outPos      As Long
+  Dim inPos       As Long
+  Dim inputLb     As Long
+  Dim inputUb     As Long
 
-Private Function DecompressStream(ByRef CompressedData() As Byte) As Byte()
-  Dim output() As Byte, outPos As Long, inPos As Long
+  If ByteCount(CompressedData) < 3 Then Exit Function
+  inputLb = LBound(CompressedData)
+  inputUb = UBound(CompressedData)
+
+  If CompressedData(inputLb) <> 1 Then
+    If Not Silent Then
+      SetError "[DecompressStream] Invalid signature byte: &H" & Hex(CompressedData(inputLb))
+    End If
+    Exit Function
+  End If
+
   ReDim output(0 To 65535)
-  If UBound(CompressedData) < 2 Then DecompressStream = output: Exit Function
-  If CompressedData(0) = 1 Then inPos = 1
-  Do While inPos < UBound(CompressedData)
-    If inPos + 1 > UBound(CompressedData) Then Exit Do
+  inPos = inputLb + 1
+
+  Do While inPos <= inputUb
+    If inPos + 1 > inputUb Then GoTo Failed
 
     Dim chunkHeader  As Long
     Dim isCompressed As Boolean
@@ -789,22 +1630,22 @@ Private Function DecompressStream(ByRef CompressedData() As Byte) As Byte()
 
     chunkHeader = CLng(CompressedData(inPos)) Or (CLng(CompressedData(inPos + 1)) * 256&)
     inPos = inPos + 2
+    If (chunkHeader And &H7000&) <> &H3000& Then GoTo Failed
     isCompressed = ((chunkHeader And &H8000&) = &H8000&)
     payloadSize = (chunkHeader And &HFFF&) + 1
     chunkEnd = inPos + payloadSize
+    If chunkEnd > inputUb + 1 Then GoTo Failed
     chunkOutPos = 0
 
     If Not isCompressed Then
       If outPos + 4096 > UBound(output) Then ReDim Preserve output(0 To outPos + 4096 + 65535)
       Dim i As Long
-      For i = 0 To 4095
-        If inPos <= UBound(CompressedData) Then
-          output(outPos) = CompressedData(inPos)
-          inPos = inPos + 1: outPos = outPos + 1: chunkOutPos = chunkOutPos + 1
-        End If
-      Next i
+      Do While inPos < chunkEnd
+        output(outPos) = CompressedData(inPos)
+        inPos = inPos + 1: outPos = outPos + 1: chunkOutPos = chunkOutPos + 1
+      Loop
     Else
-      Do While inPos < chunkEnd And inPos <= UBound(CompressedData)
+      Do While inPos < chunkEnd
         Dim flagByte As Byte
         flagByte = CompressedData(inPos)
         inPos = inPos + 1
@@ -812,36 +1653,40 @@ Private Function DecompressStream(ByRef CompressedData() As Byte) As Byte()
         Dim bitIndex As Integer
         For bitIndex = 0 To 7
           If chunkOutPos >= 4096 Then Exit Do
-          If inPos >= chunkEnd Or inPos > UBound(CompressedData) Then Exit Do
+          If inPos >= chunkEnd Then Exit Do
 
           If (flagByte And (2 ^ bitIndex)) = 0 Then
             If outPos > UBound(output) Then ReDim Preserve output(0 To outPos + 65535)
             output(outPos) = CompressedData(inPos)
             outPos = outPos + 1: chunkOutPos = chunkOutPos + 1: inPos = inPos + 1
           Else
-            If inPos + 1 > UBound(CompressedData) Then Exit Do
+            If inPos + 1 >= chunkEnd Then GoTo Failed
             Dim token As Long
             token = CLng(CompressedData(inPos)) Or (CLng(CompressedData(inPos + 1)) * 256&)
             inPos = inPos + 2
 
             Dim bitCount As Integer
             Select Case chunkOutPos
-            Case Is <= 16:   bitCount = 4
-            Case Is <= 32:   bitCount = 5
-            Case Is <= 64:   bitCount = 6
-            Case Is <= 128:  bitCount = 7
-            Case Is <= 256:  bitCount = 8
-            Case Is <= 512:  bitCount = 9
-            Case Is <= 1024: bitCount = 10
-            Case Is <= 2048: bitCount = 11
-            Case Else:       bitCount = 12
+              Case Is <= 16:   bitCount = 4
+              Case Is <= 32:   bitCount = 5
+              Case Is <= 64:   bitCount = 6
+              Case Is <= 128:  bitCount = 7
+              Case Is <= 256:  bitCount = 8
+              Case Is <= 512:  bitCount = 9
+              Case Is <= 1024: bitCount = 10
+              Case Is <= 2048: bitCount = 11
+              Case Else:       bitCount = 12
             End Select
 
-            Dim lengthMask  As Long: lengthMask = (2 ^ (16 - bitCount)) - 1
-            Dim copyLength  As Long: copyLength = (token And lengthMask) + 3
-            Dim copyOffset  As Long: copyOffset = (token \ (2 ^ (16 - bitCount))) + 1
+            Dim lengthMask As Long: lengthMask = (2 ^ (16 - bitCount)) - 1
+            Dim copyLength As Long: copyLength = (token And lengthMask) + 3
+            Dim copyOffset As Long: copyOffset = (token \ (2 ^ (16 - bitCount))) + 1
+            If copyOffset > chunkOutPos Or copyOffset > outPos Then GoTo Failed
+            If copyLength > 4096 - chunkOutPos Then GoTo Failed
 
-            If outPos + copyLength > UBound(output) Then ReDim Preserve output(0 To outPos + copyLength + 65535)
+            If outPos + copyLength > UBound(output) Then
+              ReDim Preserve output(0 To outPos + copyLength + 65535)
+            End If
 
             Dim j As Long
             For j = 0 To copyLength - 1
@@ -858,11 +1703,14 @@ Private Function DecompressStream(ByRef CompressedData() As Byte) As Byte()
 
   If outPos > 0 Then
     ReDim Preserve output(0 To outPos - 1)
-  Else
-    ReDim output(0 To 0)
+    DecompressStream = output
   End If
+  Exit Function
 
-  DecompressStream = output
+Failed:
+  If Not Silent Then
+    SetError "[DecompressStream] Invalid or truncated compressed stream"
+  End If
 End Function
 
 Private Function DispCallByVtbl(ByRef pUnk As stdole.IUnknown, ByVal lIndex As Long, ParamArray a() As Variant) As Variant
@@ -876,103 +1724,546 @@ Private Function DispCallByVtbl(ByRef pUnk As stdole.IUnknown, ByVal lIndex As L
   For lIdx = 0 To UBound(vParam)
     vType(lIdx) = VarType(vParam(lIdx))
     vPtr(lIdx) = VarPtr(vParam(lIdx))
-  Next
+  Next lIdx
 
   hResult = DispCallFunc(ObjPtr(pUnk), lIndex * PTR_SIZE, CC_STDCALL, vbLong, lIdx, vType(0), vPtr(0), DispCallByVtbl)
-  If hResult < 0 Then Debug.Print "DispCallByVtbl - hResult: &H" & hex(hResult)
+  If hResult < 0 Then LogMessage xrayDebug, "[DispCallByVtbl] hResult: &H" & Hex(hResult)
 End Function
 
 Private Function PtrToString(ByVal stringPtr As LongPtr) As String
-  Dim buf        As String
-  Dim CharLength As Long
-  CharLength = lstrlenW(stringPtr)
-  If CharLength > 0 Then
-    buf = VBA.String$(CharLength, vbNullChar)
-    CopyMemory ByVal StrPtr(buf), ByVal stringPtr, CharLength * 2
+  Dim buf       As String
+  Dim charLen   As Long
+  charLen = lstrlenW(stringPtr)
+  If charLen > 0 Then
+    buf = VBA.String$(charLen, vbNullChar)
+    CopyMemory ByVal StrPtr(buf), ByVal stringPtr, charLen * 2
   End If
   PtrToString = buf
 End Function
 
-Private Function BytesToString(ByRef data() As Byte, ByVal Pos As Long, ByVal Size As Long, ByVal CodePage As Long) As String
+Private Function BytesToString(ByRef data() As Byte, ByVal pos As Long, ByVal Size As Long, ByVal CodePage As Long) As String
   If Size <= 0 Then Exit Function
-  Dim charCount As Long, Result As String
-  charCount = MultiByteToWideChar(CodePage, 0, VarPtr(data(Pos)), Size, 0, 0)
+  If ByteCount(data) = 0 Then Exit Function
+  If pos < LBound(data) Or pos > UBound(data) Then Exit Function
+  If Size > UBound(data) - pos + 1 Then Exit Function
+  Dim charCount As Long
+  charCount = MultiByteToWideChar(CodePage, 0, VarPtr(data(pos)), Size, 0, 0)
   If charCount = 0 Then Exit Function
-  Result = VBA.String$(charCount, 0)
-  MultiByteToWideChar CodePage, 0, VarPtr(data(Pos)), Size, StrPtr(Result), charCount
-  BytesToString = Result
+  Dim result As String
+  result = VBA.String$(charCount, 0)
+  MultiByteToWideChar CodePage, 0, VarPtr(data(pos)), Size, StrPtr(result), charCount
+  BytesToString = result
 End Function
 
-Private Function BytesToBytes(ByVal s As String, ByVal CodePage As Long) As Byte()
-  ' Converts a VBA string back to bytes using the original code page
-  ' Used to preserve encoding fidelity on export
-  Dim Result() As Byte
+Private Function StringToBytes(ByVal s As String, ByVal CodePage As Long) As Byte()
+  Dim result() As Byte
   Dim Size As Long
   Size = WideCharToMultiByte(CodePage, 0, StrPtr(s), Len(s), 0, 0, 0, 0)
   If Size = 0 Then Exit Function
-  ReDim Result(0 To Size - 1)
-  WideCharToMultiByte CodePage, 0, StrPtr(s), Len(s), VarPtr(Result(0)), Size, 0, 0
-  BytesToBytes = Result
+  ReDim result(0 To Size - 1)
+  WideCharToMultiByte CodePage, 0, StrPtr(s), Len(s), VarPtr(result(0)), Size, 0, 0
+  StringToBytes = result
+End Function
+
+Private Function IsCompoundFileBytes(ByRef data() As Byte) As Boolean
+  If ByteCount(data) < 8 Then Exit Function
+  IsCompoundFileBytes = HasCompoundFileSignatureAt(data, LBound(data))
+End Function
+
+Private Function HasCompoundFileSignatureAt(ByRef data() As Byte, ByVal pos As Long) As Boolean
+  If ByteCount(data) < 8 Then Exit Function
+  If pos < LBound(data) Or pos > UBound(data) - 7 Then Exit Function
+
+  HasCompoundFileSignatureAt = _
+      data(pos) = &HD0 And data(pos + 1) = &HCF And _
+      data(pos + 2) = &H11 And data(pos + 3) = &HE0 And _
+      data(pos + 4) = &HA1 And data(pos + 5) = &HB1 And _
+      data(pos + 6) = &H1A And data(pos + 7) = &HE1
+End Function
+
+Private Function ByteCount(ByRef data() As Byte) As Long
+  On Error Resume Next
+  If UBound(data) < LBound(data) Then Exit Function
+  ByteCount = UBound(data) - LBound(data) + 1
+End Function
+
+Private Function ReadUInt16LE(ByRef data() As Byte, ByVal pos As Long) As Long
+  If ByteCount(data) < 2 Then Exit Function
+  If pos < LBound(data) Or pos > UBound(data) - 1 Then Exit Function
+  ReadUInt16LE = CLng(data(pos)) Or (CLng(data(pos + 1)) * 256&)
+End Function
+
+Private Function ReadUInt32LE(ByRef data() As Byte, ByVal pos As Long) As Double
+  If ByteCount(data) < 4 Then Exit Function
+  If pos < LBound(data) Or pos > UBound(data) - 3 Then Exit Function
+
+  ReadUInt32LE = CDbl(data(pos)) + _
+                 CDbl(data(pos + 1)) * 256# + _
+                 CDbl(data(pos + 2)) * 65536# + _
+                 CDbl(data(pos + 3)) * 16777216#
 End Function
 
 Private Function FileExists(ByVal FilePath As String) As Boolean
-  Dim attr As Long
-  attr = apiGetFileAttributesW(StrPtr(FilePath))
-  FileExists = (attr <> INVALID_FILE_ATTRIBUTES) And ((attr And FILE_ATTRIBUTE_DIRECTORY) = 0)
+  Dim attrs As Long
+  attrs = apiGetFileAttributesW(StrPtr(FilePath))
+  If attrs = INVALID_FILE_ATTRIBUTES Then Exit Function
+  FileExists = (attrs And FILE_ATTRIBUTE_DIRECTORY) = 0
 End Function
 
-Private Function FolderExists(ByVal FolderPath As String) As Boolean
-  Dim attr As Long
-  attr = apiGetFileAttributesW(StrPtr(FolderPath))
-  FolderExists = (attr <> INVALID_FILE_ATTRIBUTES) And ((attr And FILE_ATTRIBUTE_DIRECTORY) <> 0)
+Private Function FolderExists(ByVal folderPath As String) As Boolean
+  Dim attrs As Long
+  attrs = apiGetFileAttributesW(StrPtr(folderPath))
+  If attrs = INVALID_FILE_ATTRIBUTES Then Exit Function
+  FolderExists = (attrs And FILE_ATTRIBUTE_DIRECTORY) <> 0
 End Function
 
-Private Function CreateFolderRecursive(ByVal FolderPath As String) As Boolean
-  FolderPath = VBA.Trim(FolderPath)
-  If Len(FolderPath) Then
-    If Not FolderExists(FolderPath) Then
-      Dim parent As String
-      parent = Left$(FolderPath, InStrRev(FolderPath, "\") - 1)
-      If Len(parent) > 0 And Not FolderExists(parent) Then If Not CreateFolderRecursive(parent) Then Exit Function
-      CreateFolderRecursive = (apiCreateDirectoryW(StrPtr(FolderPath & vbNullChar), 0) <> 0)
-    End If
-    CreateFolderRecursive = True
+Private Function CreateFolderRecursive(ByVal folderPath As String) As Boolean
+  
+  folderPath = VBA.Trim$(folderPath)
+  If Len(folderPath) = 0 Then Exit Function
+
+  Do While Len(folderPath) > 3 And Right$(folderPath, 1) = "\"
+    folderPath = Left$(folderPath, Len(folderPath) - 1)
+  Loop
+
+  If FolderExists(folderPath) Then CreateFolderRecursive = True: Exit Function
+
+  Dim slashPos As Long
+  Dim parent As String
+  slashPos = InStrRev(folderPath, "\")
+  If slashPos > 0 Then parent = Left$(folderPath, slashPos - 1)
+  If Len(parent) = 2 And Right$(parent, 1) = ":" Then parent = parent & "\"
+
+  If Len(parent) > 0 And Not FolderExists(parent) Then
+    If Not CreateFolderRecursive(parent) Then Exit Function
+  End If
+  CreateFolderRecursive = (apiCreateDirectoryW(StrPtr(folderPath & vbNullChar), 0) <> 0)
+End Function
+
+Private Function SliceBytes(ByRef data() As Byte, ByVal pos As Long, ByVal Size As Long) As Byte()
+  
+  Dim result() As Byte
+  If Size <= 0 Then Exit Function
+  If ByteCount(data) = 0 Then Exit Function
+  If pos < LBound(data) Or pos > UBound(data) Then Exit Function
+  If Size > UBound(data) - pos + 1 Then Exit Function
+  ReDim result(0 To Size - 1)
+  CopyMemory VarPtr(result(0)), VarPtr(data(pos)), Size
+  SliceBytes = result
+End Function
+
+Private Function WriteFile(ByVal FileName As String, ByRef fileData As Variant, Optional ByVal WriteBinary As Boolean = True) As Boolean
+  On Error GoTo Failed
+  Dim hFile As LongPtr
+  Dim bytesWritten As Long
+  Dim data() As Byte
+
+  If WriteBinary Then
+    data = fileData
+  Else
+    data = StringToBytes(CStr(fileData), 65001)
+  End If
+
+  hFile = apiCreateFile(StrPtr(FileName), GENERIC_WRITE, FILE_SHARE_READ Or FILE_SHARE_WRITE Or FILE_SHARE_DELETE, 0, CREATE_ALWAYS, 0, 0)
+  If hFile = INVALID_HANDLE_VALUE Then Exit Function
+
+  Dim dataSize As Long
+  dataSize = ByteCount(data)
+  If dataSize > 0 Then
+    If apiWriteFile(hFile, VarPtr(data(LBound(data))), dataSize, bytesWritten, 0) = 0 Then GoTo Failed
+    If bytesWritten <> dataSize Then GoTo Failed
+  End If
+
+  apiCloseHandle hFile
+  hFile = INVALID_HANDLE_VALUE
+  WriteFile = True
+  Exit Function
+
+Failed:
+  If hFile <> 0 And hFile <> INVALID_HANDLE_VALUE Then apiCloseHandle hFile
+End Function
+
+Private Function ReadFile(ByVal FilePath As String, _
+                               Optional ByVal MaxBytes As Long = 0) As Byte()
+  Dim hFile      As LongPtr
+  Dim fileSize   As LongPtr
+  Dim readSize   As Long
+  Dim bytesRead  As Long
+  Dim result()   As Byte
+
+  hFile = apiCreateFile(StrPtr(FilePath), GENERIC_READ, _
+                        FILE_SHARE_READ Or FILE_SHARE_WRITE Or FILE_SHARE_DELETE, _
+                        0, OPEN_EXISTING, 0, 0)
+  If hFile = INVALID_HANDLE_VALUE Then
+    SetError "[ReadFile] Could not open: " & FilePath
+    Exit Function
+  End If
+
+  If apiGetFileSizeEx(hFile, fileSize) = 0 Then
+    apiCloseHandle hFile
+    Exit Function
+  End If
+
+  readSize = CLng(IIf(MaxBytes > 0 And MaxBytes < fileSize, MaxBytes, fileSize))
+  If readSize = 0 Then apiCloseHandle hFile: Exit Function
+
+  ReDim result(0 To readSize - 1)
+  If apiReadFile(hFile, VarPtr(result(0)), readSize, bytesRead, 0) <> 0 Then
+    If bytesRead = readSize Then ReadFile = result
+  End If
+
+  apiCloseHandle hFile
+End Function
+Private Function LoadFromAccessDB(ByVal FilePath As String) As Boolean
+  Dim data() As Byte
+  data = ReadFile(FilePath)
+
+  If ByteCount(data) < 4096 Then
+    SetError "[LoadFromAccessDB] File is too small to be an Access database."
+    Exit Function
+  End If
+
+  Dim sig As String
+  sig = StrConv(SliceBytes(data, 4, 15), vbUnicode)
+  If sig <> "Standard ACE DB" And sig <> "Standard Jet DB" Then
+    SetError "[LoadFromAccessDB] Invalid database signature."
+    Exit Function
+  End If
+
+  ParseAccessDB data
+  LoadFromAccessDB = IsLoaded
+  If Not LoadFromAccessDB Then
+    LogMessage xrayWarning, "[LoadFromAccessDB] No validated VBA module source was found. Access support is experimental and currently assumes 4096-byte ACE/Jet4 pages."
   End If
 End Function
 
-Private Function SliceBytes(ByRef data() As Byte, ByVal Pos As Long, ByVal Size As Long) As Byte()
-  Dim Result() As Byte
-  If Size <= 0 Then Exit Function
-  ReDim Result(0 To Size - 1)
-  CopyMemory VarPtr(Result(0)), VarPtr(data(Pos)), Size
-  SliceBytes = Result
+Private Sub ParseAccessDB(ByRef data() As Byte)
+  Reset
+  Dim pageCount As Long
+  pageCount = (UBound(data) + 1) \ 4096
+
+  Dim p As Long
+  For p = 0 To pageCount - 1
+    Dim base As Long
+    base = p * 4096
+    If base + 4095 > UBound(data) Then Exit For
+
+    If data(base) = &H1 And data(base + 4) = &H4C And data(base + 5) = &H56 And data(base + 6) = &H41 And data(base + 7) = &H4C Then
+      ParseLVALPage data, p
+    End If
+  Next p
+End Sub
+
+Private Sub ParseLVALPage(ByRef data() As Byte, ByVal p As Long)
+  Dim base As Long
+  base = p * 4096
+
+  Dim slotCount As Long
+  slotCount = CLng(data(base + 12)) Or (CLng(data(base + 13)) * 256&)
+  If slotCount > (4096 - 14) \ 2 Then slotCount = (4096 - 14) \ 2
+
+  Dim slot As Long
+  For slot = 0 To slotCount - 1
+    Dim slotOffset As Long
+    slotOffset = base + 14 + (slot * 2)
+    Dim raw As Long
+    raw = CLng(data(slotOffset)) Or (CLng(data(slotOffset + 1)) * 256&)
+
+    If (raw And &HF000&) <> &HD000& Then
+      Dim rowStart As Long
+      rowStart = raw And &HFFF&
+      Dim rowEnd As Long
+      rowEnd = 4096
+
+      Dim i As Long
+      For i = 0 To slotCount - 1
+        Dim otherRaw As Long
+        otherRaw = CLng(data(base + 14 + (i * 2))) Or (CLng(data(base + 14 + (i * 2) + 1)) * 256&)
+        If (otherRaw And &HF000&) <> &HD000& Then
+          Dim o As Long
+          o = otherRaw And &HFFF&
+          If o > rowStart And o < rowEnd Then rowEnd = o
+        End If
+      Next i
+
+      Dim rowLength As Long
+      rowLength = rowEnd - rowStart
+      If rowLength > 0 Then
+        ProcessAccessLVALRow data, p, slot, base + rowStart, rowLength
+      End If
+    End If
+  Next slot
+End Sub
+
+Private Sub ProcessAccessLVALRow(ByRef data() As Byte, ByVal p As Long, ByVal slot As Long, ByVal rowStart As Long, ByVal rowLength As Long)
+  Dim rowBytes() As Byte
+  rowBytes = SliceBytes(data, rowStart, rowLength)
+
+  Dim i As Long, hdr As Long
+  For i = 0 To rowLength - 4
+    If rowBytes(i) = &H1 Then
+      hdr = CLng(rowBytes(i + 1)) Or (CLng(rowBytes(i + 2)) * 256&)
+      If ((hdr \ 4096) And 7) = 3 Then
+        TryDecompressAccessBlob SliceBytes(rowBytes, i, rowLength - i)
+      End If
+    End If
+  Next i
+
+  If rowLength >= 4 Then
+    Dim next_p As Long
+    next_p = CLng(rowBytes(1)) Or (CLng(rowBytes(2)) * 256&) Or (CLng(rowBytes(3)) * 65536)
+    If next_p > 0 And next_p < ((UBound(data) + 1) \ 4096) Then
+      Dim nextBase As Long
+      nextBase = next_p * 4096
+      If data(nextBase) = &H1 And data(nextBase + 4) = &H4C And data(nextBase + 5) = &H56 And data(nextBase + 6) = &H41 And data(nextBase + 7) = &H4C Then
+        Dim chainBlob() As Byte
+        If TryWalkAccessLVALChain(data, p, slot, chainBlob) Then
+          If ByteCount(chainBlob) >= 4 Then
+            For i = LBound(chainBlob) To UBound(chainBlob) - 3
+              If chainBlob(i) = &H1 Then
+                hdr = CLng(chainBlob(i + 1)) Or (CLng(chainBlob(i + 2)) * 256&)
+                If ((hdr \ 4096) And 7) = 3 Then
+                  TryDecompressAccessBlob SliceBytes(chainBlob, i, UBound(chainBlob) - i + 1)
+                End If
+              End If
+            Next i
+          End If
+        End If
+      End If
+    End If
+  End If
+End Sub
+
+Private Function TryWalkAccessLVALChain(ByRef data() As Byte, ByVal startPage As Long, ByVal startSlot As Long, ByRef outBlob() As Byte) As Boolean
+  Dim cur_p As Long
+  Dim cur_s As Long
+  cur_p = startPage
+  cur_s = startSlot
+
+  Dim tempBlob() As Byte
+  Dim totalLen As Long: totalLen = 0
+
+  Dim maxChunks As Long: maxChunks = 4096
+  Dim chunkCount As Long: chunkCount = 0
+
+  Do While chunkCount < maxChunks
+    chunkCount = chunkCount + 1
+
+    Dim base As Long: base = cur_p * 4096
+    If base > UBound(data) Then Exit Function
+
+    Dim slotCount As Long
+    slotCount = CLng(data(base + 12)) Or (CLng(data(base + 13)) * 256&)
+    If slotCount > (4096 - 14) \ 2 Then slotCount = (4096 - 14) \ 2
+    If cur_s >= slotCount Then Exit Function
+
+    Dim slotOffset As Long: slotOffset = base + 14 + (cur_s * 2)
+    Dim raw As Long: raw = CLng(data(slotOffset)) Or (CLng(data(slotOffset + 1)) * 256&)
+    If (raw And &HF000&) = &HD000& Then Exit Function
+
+    Dim rowStart As Long: rowStart = raw And &HFFF&
+    Dim rowEnd As Long: rowEnd = 4096
+    Dim i As Long
+    For i = 0 To slotCount - 1
+      Dim otherRaw As Long: otherRaw = CLng(data(base + 14 + (i * 2))) Or (CLng(data(base + 14 + (i * 2) + 1)) * 256&)
+      If (otherRaw And &HF000&) <> &HD000& Then
+        Dim o As Long
+        o = otherRaw And &HFFF&
+        If o > rowStart And o < rowEnd Then rowEnd = o
+      End If
+    Next i
+
+    Dim rowLength As Long: rowLength = rowEnd - rowStart
+    If rowLength < 4 Then Exit Function
+
+    Dim next_s As Long: next_s = CLng(data(base + rowStart))
+    Dim next_p As Long: next_p = CLng(data(base + rowStart + 1)) Or (CLng(data(base + rowStart + 2)) * 256&) Or (CLng(data(base + rowStart + 3)) * 65536)
+
+    If rowLength > 4 Then
+      If totalLen = 0 Then
+        ReDim tempBlob(0 To rowLength - 5)
+      Else
+        ReDim Preserve tempBlob(0 To totalLen + rowLength - 5)
+      End If
+      CopyMemory VarPtr(tempBlob(totalLen)), VarPtr(data(base + rowStart + 4)), rowLength - 4
+      totalLen = totalLen + rowLength - 4
+    End If
+
+    If next_p = 0 And next_s = 0 Then
+      If totalLen = 0 Then Exit Function
+      outBlob = tempBlob
+      TryWalkAccessLVALChain = True
+      Exit Function
+    End If
+
+    If next_p >= ((UBound(data) + 1) \ 4096) Then Exit Function
+    cur_p = next_p
+    cur_s = next_s
+  Loop
 End Function
 
-Private Function WriteFile(ByVal fileName As String, ByRef data As Variant, Optional ByVal WriteBinary As Boolean = True) As Boolean
-  On Error GoTo errHandler
-  Const adTypeBinary = 1
-  Const adTypeText = 2
-  Const adSaveCreateOverWrite = 2
-  Dim stream As Object
-  Set stream = CreateObject("ADODB.Stream")
-  With stream
-    .Type = IIf(WriteBinary, adTypeBinary, adTypeText)
-    .Open
-    If WriteBinary Then
-      .Write data
-    Else
-      .Charset = "UTF-8"
-      .WriteText CStr(data)
+Private Sub TryDecompressAccessBlob(ByRef compData() As Byte)
+  
+  On Error GoTo IgnoreDecompFail
+  Dim decomp() As Byte
+  decomp = DecompressStream(compData, True)
+
+  If ByteCount(decomp) < 20 Then Exit Sub
+
+  If decomp(0) = &H41 And decomp(1) = &H74 And decomp(2) = &H74 And decomp(3) = &H72 And decomp(4) = &H69 And decomp(5) = &H62 And decomp(6) = &H75 And decomp(7) = &H74 And decomp(8) = &H65 Then
+    If decomp(9) = &H20 And decomp(10) = &H56 And decomp(11) = &H42 And decomp(12) = &H5F And decomp(13) = &H4E And decomp(14) = &H61 And (decomp(15) = &H6D Or decomp(15) = &H65) And decomp(16) = &H65 And decomp(17) = &H20 And decomp(18) = &H3D And decomp(19) = &H20 Then
+      ExtractAccessModule decomp
     End If
-    .SaveToFile fileName, adSaveCreateOverWrite
-    .Close
-  End With
-  WriteFile = True
-  Exit Function
-errHandler:
-  WriteFile = False
-End Function
+  End If
+IgnoreDecompFail:
+End Sub
+
+Private Sub ExtractAccessModule(ByRef decomp() As Byte)
+  
+  If ByteCount(decomp) = 0 Then Exit Sub
+  Dim text As String
+  text = BytesToString(decomp, LBound(decomp), ByteCount(decomp), m_Project.CodePage)
+
+  Dim lines() As String
+  lines = Split(text, vbCrLf)
+
+  Dim modName As String
+  Dim bodyStart As Long: bodyStart = 0
+  Dim i As Long
+  For i = LBound(lines) To UBound(lines)
+    If Left$(lines(i), 10) = "Attribute " Then
+      If Left$(lines(i), 21) = "Attribute VB_Name = """ Then
+        Dim parts() As String: parts = Split(lines(i), """")
+        If UBound(parts) >= 1 Then modName = parts(1)
+      End If
+    Else
+      bodyStart = i
+      Exit For
+    End If
+  Next i
+
+  If Len(modName) = 0 Then Exit Sub
+
+  If m_Project.ModuleCount > 0 Then
+    For i = 1 To m_Project.ModuleCount
+      If StrComp(m_Project.Modules(i).Name, modName, vbTextCompare) = 0 Then Exit Sub
+    Next i
+  End If
+
+  Dim newCount As Long
+  newCount = m_Project.ModuleCount + 1
+  m_Project.ModuleCount = newCount
+
+  Dim ub As Long
+  ub = 0
+  On Error Resume Next
+  ub = UBound(m_Project.Modules)
+  On Error GoTo 0
+
+  If newCount > ub Then
+    If ub = 0 Then
+      ReDim m_Project.Modules(1 To 10)
+    Else
+      ReDim Preserve m_Project.Modules(1 To newCount + 10)
+    End If
+  End If
+
+  m_Project.Modules(newCount).Name = modName
+  m_Project.Modules(newCount).ModType = modStandard
+
+  Dim isClass As Boolean: isClass = False
+  For i = LBound(lines) To bodyStart - 1
+    If InStr(lines(i), "VB_Exposed") > 0 Or InStr(lines(i), "VB_Creatable") > 0 Then isClass = True
+  Next i
+  If isClass Then m_Project.Modules(newCount).ModType = modClass
+
+  Dim bodyLines() As String
+  If bodyStart <= UBound(lines) Then
+    Dim j As Long: j = 0
+    ReDim bodyLines(0 To UBound(lines) - bodyStart)
+    For i = bodyStart To UBound(lines)
+      bodyLines(j) = lines(i)
+      j = j + 1
+    Next i
+    m_Project.Modules(newCount).SourceCode = Join(bodyLines, vbCrLf)
+  End If
+
+End Sub
+
+Private Sub LogMessage(ByVal level As XrayLogLevel, ByVal Msg As String)
+  If level < m_LogLevel Then Exit Sub
+
+  Dim prefix As String
+  Select Case level
+    Case xrayDebug:   prefix = "[DBG] "
+    Case xrayInfo:    prefix = "[INF] "
+    Case xrayWarning: prefix = "[WRN] "
+    Case xrayError:   prefix = "[ERR] "
+    Case Else:        prefix = "[   ] "
+  End Select
+
+  Debug.Print prefix & Msg
+End Sub
+
+Private Sub SetError(ByVal Msg As String)
+  m_LastError = Msg
+  Debug.Print "[ERR] " & Msg
+End Sub
+
+Private Sub ClearError()
+  m_LastError = vbNullString
+End Sub
 
 Private Sub Class_Initialize()
+  m_LogLevel = xrayInfo
   Reset
 End Sub
+
+Private Function StorageOpenZip(ByVal OfficePath As String) As stdole.IUnknown
+  Dim clsid  As UUID
+  Dim iid    As UUID
+  Dim shExt  As stdole.IUnknown
+  Dim pidl   As LongPtr
+  Dim hr     As Long
+
+  CLSIDFromString StrPtr(CLSID_ZipFolder), clsid
+  CLSIDFromString StrPtr(IID_IPersistFolder), iid
+
+  hr = CoCreateInstance(clsid, 0, CLSCTX_INPROC_SERVER, iid, shExt)
+  If hr <> 0 Or shExt Is Nothing Then
+    SetError "[StorageOpenZip] CoCreateInstance failed: &H" & Hex$(hr)
+    Exit Function
+  End If
+
+  pidl = ILCreateFromPathW(StrPtr(OfficePath))
+  If pidl = 0 Then
+    SetError "[StorageOpenZip] ILCreateFromPathW failed for: " & OfficePath
+    Exit Function
+  End If
+  hr = DispCallByVtbl(shExt, 4, pidl)
+  ILFree pidl
+  If hr <> 0 Then
+    SetError "[StorageOpenZip] Initialize failed: &H" & Hex$(hr)
+    Exit Function
+  End If
+
+  Set StorageOpenZip = COMQueryInterface(shExt, IID_IStorage)
+  If StorageOpenZip Is Nothing Then
+    SetError "[StorageOpenZip] QI for IStorage failed"
+  End If
+End Function
+
+Private Function COMQueryInterface(ByRef pUnk As stdole.IUnknown, ByVal iid As String) As stdole.IUnknown
+  If pUnk Is Nothing Then Exit Function
+  Dim riid   As UUID
+  Dim result As stdole.IUnknown
+  CLSIDFromString StrPtr(iid), riid
+  DispCallByVtbl pUnk, 0, VarPtr(riid), VarPtr(result)
+  Set COMQueryInterface = result
+End Function
+
+#If False Then
+  Dim xrayDebug, xrayInfo, xrayWarning, xrayError
+  Dim modOther, modStandard, modClass, modDesigner, modDocument
+#End If
+
