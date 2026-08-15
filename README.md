@@ -94,23 +94,9 @@ There are two different meanings of "supported" used here: one is the truth, and
 
 ## A 'quick' note about Access
 
-Every other Office application stores its VBA the same 'civilised' way: a compound document called `vbaProject.bin`, sitting either as a file inside the OOXML zip or as a storage inside the old binary format. Point any OLE parser at it and the modules are right there.
-
-Access does not do this. Access takes the VBA project, chops it into pieces, and stores those pieces as rows in hidden system tables. There is no `vbaProject.bin` to find. This is why olevba doesn't support it, why mdbtools has an open feature request for it that nobody has picked up, and why the canonical advice for "how do I get the code out of this 2003 MDB" is still "install an old copy of Access".
+(Almost) Every other Office application stores its VBA the same 'civilised' way: a compound document called `vbaProject.bin`, sitting either as a file inside the OOXML zip or as a storage inside the old binary format. Point any OLE parser at it and the modules are right there. Access does not do this. Access takes the VBA project, chops it into pieces, and stores those pieces as rows in hidden system tables. There is no `vbaProject.bin` to find. 
 
 vbaXray takes the other route. It scans the database for LVAL pages, follows the row chains to reassemble anything that spans pages, decompresses each candidate blob, and keeps whatever comes out looking like a module. No system tables, no catalog parsing, no reassembling a synthetic compound document to feed to a parser that expects one. If it decompresses into something that starts `Attribute VB_Name = `, it's a module.
-
-> [!NOTE]
-> Access support is experimental and currently assumes 4096-byte ACE/Jet 4 pages. That covers the newer ACE files and Jet 4-era databases, but I have **not** exhaustively tested the various Access generations and file variants. Access 97 used 2048-byte pages and a different storage scheme again, so it is not currently handled.
-
-## Requirements
-
-Windows, and a VBA host. 32-bit and 64-bit are both supported, and VBA6/VB6 hosts compile through the `#Else` branch. 
-
-Legacy PowerPoint is the one exception, and needs Microsoft's `archiveint.dll` (the Windows build of libarchive - see ChibiArc) when it encounters compressed VBA records. Raw/uncompressed records do not need the inflater.
-
-> [!NOTE]
-> `archiveint.dll` has shipped as a Windows component since Windows 10 version 1803. On supported modern Windows installations it should therefore already be present. If you are running something older, or a particularly stripped-down Windows installation, legacy PowerPoint support may not work. 
 
 > [!IMPORTANT]
 > As ever, any bugs, blunders, oversights, and general acts of coding inelegance are entirely my own. Any sparks of coding brilliance very likely belong to other people.
