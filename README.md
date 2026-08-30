@@ -6,6 +6,7 @@
 ![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg)
 ![VBA](https://img.shields.io/badge/VBA-32bit%20%7C%2064bit-purple.svg)
 ![Dependencies](https://img.shields.io/badge/Dependencies-none%20(mostly)-teal.svg)
+[![Awesome](https://awesome.re/mentioned-badge.svg)](https://github.com/sancarn/awesome-vba)
 
 vbaXray is a single-class VBA module for reading VBA source code straight out of Office files - Excel, Word, PowerPoint, Publisher, Outlook, and Access - without opening them.
 
@@ -20,7 +21,7 @@ Depending on the file type, vbaXray then:
 3. For legacy PowerPoint (`.ppt`), scans the `PowerPoint Document` stream for `VbaProjectStg` records. These are sometimes raw CFB, sometimes zlib-compressed — the compressed ones get wrapped in a gzip shell and fed through `archiveint.dll` because PowerPoint's DEFLATE payloads end with a sync flush rather than a conventional terminator, which is a delightful thing to discover empirically (I'm lying...)
 4. For Access (`.accdb`, `.mdb`), there is no `vbaProject.bin` at all. Access shreds the VBA across LVAL database pages. vbaXray walks the pages, follows the row chains, decompresses each candidate blob, and keeps whatever comes out looking module-ish. The only reason I know any of this is thanks to WilliamSmithEdward's pyOpenVBA, which is a fantastic resource for anyone ~~unhinged enough~~ interested in Access internals.
 5. Once the VBA storage is open, reads the `VBA/dir` stream and decompresses it using the MS-OVBA LZ77 variant (see MS-OVBA 2.4.1).
-6. Parses the `dir` stream records to extract each module's name, stream name, and compressed-source offset.
+6. Parses the `dir` stream records to extract each module's name, stream name, and compressed-source offset, along with the project's library references.
 7. Reads the `PROJECT` stream (plain text) to refine module types — standard, class, document, designer.
 8. For each module, reads the corresponding VBA stream, slices from the stored offset, and decompresses the source.
 
@@ -94,23 +95,9 @@ There are two different meanings of "supported" used here: one is the truth, and
 
 ## A 'quick' note about Access
 
-Every other Office application stores its VBA the same 'civilised' way: a compound document called `vbaProject.bin`, sitting either as a file inside the OOXML zip or as a storage inside the old binary format. Point any OLE parser at it and the modules are right there.
-
-Access does not do this. Access takes the VBA project, chops it into pieces, and stores those pieces as rows in hidden system tables. There is no `vbaProject.bin` to find. This is why olevba doesn't support it, why mdbtools has an open feature request for it that nobody has picked up, and why the canonical advice for "how do I get the code out of this 2003 MDB" is still "install an old copy of Access".
+(Almost) Every other Office application stores its VBA the same 'civilised' way: a compound document called `vbaProject.bin`, sitting either as a file inside the OOXML zip or as a storage inside the old binary format. Point any OLE parser at it and the modules are right there. Access does not do this. Access takes the VBA project, chops it into pieces, and stores those pieces as rows in hidden system tables. There is no `vbaProject.bin` to find. 
 
 vbaXray takes the other route. It scans the database for LVAL pages, follows the row chains to reassemble anything that spans pages, decompresses each candidate blob, and keeps whatever comes out looking like a module. No system tables, no catalog parsing, no reassembling a synthetic compound document to feed to a parser that expects one. If it decompresses into something that starts `Attribute VB_Name = `, it's a module.
-
-> [!NOTE]
-> Access support is experimental and currently assumes 4096-byte ACE/Jet 4 pages. That covers the newer ACE files and Jet 4-era databases, but I have **not** exhaustively tested the various Access generations and file variants. Access 97 used 2048-byte pages and a different storage scheme again, so it is not currently handled.
-
-## Requirements
-
-Windows, and a VBA host. 32-bit and 64-bit are both supported, and VBA6/VB6 hosts compile through the `#Else` branch. 
-
-Legacy PowerPoint is the one exception, and needs Microsoft's `archiveint.dll` (the Windows build of libarchive - see ChibiArc) when it encounters compressed VBA records. Raw/uncompressed records do not need the inflater.
-
-> [!NOTE]
-> `archiveint.dll` has shipped as a Windows component since Windows 10 version 1803. On supported modern Windows installations it should therefore already be present. If you are running something older, or a particularly stripped-down Windows installation, legacy PowerPoint support may not work. 
 
 > [!IMPORTANT]
 > As ever, any bugs, blunders, oversights, and general acts of coding inelegance are entirely my own. Any sparks of coding brilliance very likely belong to other people.
@@ -141,6 +128,18 @@ Legacy PowerPoint is the one exception, and needs Microsoft's `archiveint.dll` (
 | `IsForm(Index)` | `True` if it's a UserForm designer module |
 | `SourceCode(Index)` | The full decompressed source |
 
+### References
+
+| Property | Description |
+| :--- | :--- |
+| `ReferenceCount` | How many library references the project declares |
+| `ReferenceName(Index)` | Display name of the reference at 1-based `Index` |
+| `ReferenceGUID(Index)` | Typelib GUID, e.g. `{00020813-0000-0000-C000-000000000046}` |
+| `ReferenceMajorVersion(Index)` | Major version number of the referenced library |
+| `ReferenceMinorVersion(Index)` | Minor version number of the referenced library |
+| `ReferenceDescription(Index)` | Description string, typically the typelib's friendly name |
+| `ReferenceFilePath(Index)` | File path to the referenced library, where available |
+
 ### Exporting
 
 | Method | Description |
@@ -149,6 +148,8 @@ Legacy PowerPoint is the one exception, and needs Microsoft's `archiveint.dll` (
 | `ExportModule(Index, Path)` | One module, by index |
 | `ExportModuleByName(Name, Path)` | One module, by name, case-insensitive |
 | `FullSourceCode([Separator])` | The whole project as one string. `{0}` in the separator becomes the module name |
+| `ExtractFormFRX(Bin(), Parent, Form, Path)` | Extract a UserForm's `.frx` binary data from a `vbaProject.bin` byte array |
+| `ExportFormFRXFromFile(OfficePath, Form, Path)` | Same thing, but takes a file path and works out the storage layout for you |
 
 ### Diagnostics
 
@@ -159,7 +160,7 @@ Legacy PowerPoint is the one exception, and needs Microsoft's `archiveint.dll` (
 | `LastOperationTime` | Elapsed seconds for the most recent load or `ExportAll` |
 | `Version` | Class version as a `Single` |
 | `IsCompoundFile(Path)` | `True` if the file starts with the CFB signature. Handy for routing before you load |
-| `DebugDumpStorageTree([Path])` | Geniunely useful! The full storage tree with stream sizes, to the Immediate window or to a file. Non-printable characters in stream names come out as `\xNN`, which is how you find out what's actually in there |
+| `DebugDumpStorageTree([Path], [ExcludeSRP])` | Genuinely useful! The full storage tree with stream sizes, to the Immediate window or to a file. Non-printable characters in stream names come out as `\xNN`, which is how you find out what's actually in there |
 
 ### Export layout
 
@@ -186,7 +187,14 @@ Classes get the `VERSION 1.0 CLASS` etc bolted onto the start of module, because
 
 * **No references list.** The `dir` stream carries the project's library references and vbaXray currently walks straight past them. This one is genuinely on the to-do list.
 
-* **No Visio support.** Frankly, I've never used Visio, and while I genuinely did try to add support, I ended up removing  the Visio-specific extraction path because it just did not work on the single Visio file I had available. But I'm an adorable and naievely trusting sort-of-person, so if you have a few non-malware-riddled Visio files that you would be happy to share or can otherwise direct me to, please get in touch.
+* **No Visio support.** Frankly, I've never used Visio, and while I genuinely did try to add support, I ended up removing the Visio-specific extraction path because it just did not work on the single Visio file I had available. But I'm an adorable and naively trusting sort-of-person, so if you have a few non-malware-riddled Visio files that you would be happy to share or can otherwise direct me to, please get in touch.
+
+## Changes in 2.1
+
+* **FRX export.** `ExportAll` now writes valid `.frx` files alongside `.frm` source for UserForm modules. The binary data is extracted and wrapped with the correct FRX header (including userform dimensions), and the `.frm` gets a synthesized header so it re-imports into the VBE. `ExtractFormFRX` and `ExportFormFRXFromFile` are available for standalone use.
+* **Project references.** Project references are now included as accessible properties.
+* **Resilient storage layout.** If the expected CFB path for a file type doesn't contain the expected stream, vbaXray checks alternative layouts before giving up.
+* **`.accda` extension** added to the Access file type list.
 
 ## Changes in 2.0
 
@@ -206,8 +214,8 @@ Version 1.0 reads OOXML files via `Shell.Application` and not much else. Version
 
 There are a few things I'd quite like to investigate, although none of them should be taken as any assurance that I have any idea what I'm doing.
 
-* **Project references.** The `dir` stream contains them; vbaXray currently doesn't expose them.
-* **FRX extraction.** The `.frm` source comes out, but the accompanying binary `.frx` data does not.
+* ~~**Project references.** The `dir` stream contains them; vbaXray currently doesn't expose them.~~
+* ~~**FRX extraction.** The `.frm` source comes out, but the accompanying binary `.frx` data does not.~~
 * **Older MDB format.**
 * **Embedded files and OLE objects.** The storage tree already exposes where these things live; actually extracting and/or following them is another job (mostly complete).
 * **Writing/editing.** Eventually I'd like to see whether a VBA project can be modified and successfully written back into its container.
@@ -222,7 +230,6 @@ vbaXray was created by Kallun Willock (me).
 * **fafalone and The trick**, for the ZipFldr IStorage technique the OOXML path is built on: <https://www.vbforums.com/showthread.php?804893>
 * **Beakerboy**, for a great deal of careful MS-OVBA work: <https://github.com/Beakerboy/>
 * **WilliamSmithEdward** for solving the ACCDB/MDB formats: <https://github.com/WilliamSmithEdward/pyOpenVBA/>
-* **OLEVBA** — generally, but also the source reference for PPT record layout: <https://github.com/decalage2/oletools>
 
 ---
 
