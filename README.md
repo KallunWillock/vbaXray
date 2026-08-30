@@ -91,7 +91,7 @@ There are two different meanings of "supported" used here: one is the truth, and
 | **Access** | `.accdb` and `.mdb` | Implemented for the modern version | Tested |
 | **Raw** | `vbaProject.bin` | Implemented | Tested |
 
-`.accde` and `.mde` will not work - you're forgiven for thinking that this is just me being lazy, but it appears that Access strips the source when it compiles those, leaving only p-code, so there is genuinely nothing there to recover. 
+`.accde` and `.mde` will not work - you're forgiven for thinking that this is just me being lazy, but it appears that Access strips the source when it compiles those, leaving only p-code, so there is nothing there to recover. 
 
 ## A 'quick' note about Access
 
@@ -160,7 +160,7 @@ vbaXray takes the other route. It scans the database for LVAL pages, follows the
 | `LastOperationTime` | Elapsed seconds for the most recent load or `ExportAll` |
 | `Version` | Class version as a `Single` |
 | `IsCompoundFile(Path)` | `True` if the file starts with the CFB signature. Handy for routing before you load |
-| `DebugDumpStorageTree([Path], [ExcludeSRP])` | Genuinely useful! The full storage tree with stream sizes, to the Immediate window or to a file. Non-printable characters in stream names come out as `\xNN`, which is how you find out what's actually in there |
+| `DebugDumpStorageTree([Path], [ExcludeSRP])` | The full storage tree with stream sizes, to the Immediate window or to a file. Non-printable characters in stream names come out as `\xNN`, which is how you find out what's actually in there |
 
 ### Export layout
 
@@ -179,15 +179,11 @@ Classes get the `VERSION 1.0 CLASS` etc bolted onto the start of module, because
 
 * **Read-only.** vbaXray reads. It does not write. Injecting VBA back into a container is a whole other headache that I have not got around to yet. Office will gleefully reject output that complies with the specification but not byte-identical to what their own compressor would have (should have?) produced, which is a delightful thing to discover empirically.
 
-* **No FRX extraction.** UserForm binary data - images, control layout, embedded objects - lives in a parallel ~~universe~~  `.frx` stream that is not extracted. The `.frm` text comes out in full (with some curious though benign extras in the header portion), so the code is all there, but an exported form will not re-import at all as is without the FRX data. I don't know that anyone has managed to reverse-engineer the FRX format thus far, but I live in hope.
-
 * **No p-code.** This is yet another headache, and I will not claim to know enough about the VBA flavour of p-code to anything sensible with it as yet. Only the original source is recovered.
 
 * **No embedded OLE extraction and recursion.** ... yet! Stay tuned!
 
-* **No references list.** The `dir` stream carries the project's library references and vbaXray currently walks straight past them. This one is genuinely on the to-do list.
-
-* **No Visio support.** Frankly, I've never used Visio, and while I genuinely did try to add support, I ended up removing the Visio-specific extraction path because it just did not work on the single Visio file I had available. But I'm an adorable and naively trusting sort-of-person, so if you have a few non-malware-riddled Visio files that you would be happy to share or can otherwise direct me to, please get in touch.
+* **No Visio support.** Frankly, I've never used Visio, and while I did try to add support, I ended up removing the Visio-specific extraction path because it just did not work on the singe Visio file I had available. But I'm an adorable and naively trusting sort-of-person, so if you have a few non-malware-riddled Visio files that you would be happy to share or can otherwise direct me to, please get in touch.
 
 ## Changes in 2.1
 
@@ -214,11 +210,11 @@ Version 1.0 reads OOXML files via `Shell.Application` and not much else. Version
 
 There are a few things I'd quite like to investigate, although none of them should be taken as any assurance that I have any idea what I'm doing.
 
-* ~~**Project references.** The `dir` stream contains them; vbaXray currently doesn't expose them.~~
-* ~~**FRX extraction.** The `.frm` source comes out, but the accompanying binary `.frx` data does not.~~
 * **Older MDB format.**
 * **Embedded files and OLE objects.** The storage tree already exposes where these things live; actually extracting and/or following them is another job (mostly complete).
 * **Writing/editing.** Eventually I'd like to see whether a VBA project can be modified and successfully written back into its container.
+* ~~**Project references.** The `dir` stream contains them; vbaXray currently doesn't expose them.~~
+* ~~**FRX extraction.** The `.frm` source comes out, but the accompanying binary `.frx` data does not.~~
 
 ---
 
