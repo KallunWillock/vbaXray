@@ -160,7 +160,7 @@ vbaXray takes the other route. It scans the database for LVAL pages, follows the
 | `LastOperationTime` | Elapsed seconds for the most recent load or `ExportAll` |
 | `Version` | Class version as a `Single` |
 | `IsCompoundFile(Path)` | `True` if the file starts with the CFB signature. Handy for routing before you load |
-| `DebugDumpStorageTree([Path])` | Geniunely useful! The full storage tree with stream sizes, to the Immediate window or to a file. Non-printable characters in stream names come out as `\xNN`, which is how you find out what's actually in there |
+| `DebugDumpStorageTree([Path], [ExcludeSRP])` | The full storage tree with stream sizes, to the Immediate window or to a file. Non-printable characters in stream names come out as `\xNN`, which is how you find out what's actually in there |
 
 ### Export layout
 
@@ -187,7 +187,10 @@ Classes get the `VERSION 1.0 CLASS` etc bolted onto the start of module, because
 
 ## Changes in 2.1
 
-* **No Visio support.** Frankly, I've never used Visio, and while I genuinely did try to add support, I ended up removing  the Visio-specific extraction path because it just did not work on the single Visio file I had available. But I'm an adorable and naievely trusting sort-of-person, so if you have a few non-malware-riddled Visio files that you would be happy to share or can otherwise direct me to, please get in touch.
+* **FRX export.** `ExportAll` now writes valid `.frx` files alongside `.frm` source for UserForm modules. The binary data is extracted and wrapped with the correct FRX header (including userform dimensions), and the `.frm` gets a synthesized header so it re-imports into the VBE. `ExtractFormFRX` and `ExportFormFRXFromFile` are available for standalone use.
+* **Project references.** Project references are now included as accessible properties.
+* **Resilient storage layout.** If the expected CFB path for a file type doesn't contain the expected stream, vbaXray checks alternative layouts before giving up.
+* **`.accda` extension** added to the Access file type list.
 
 ## Changes in 2.0
 
