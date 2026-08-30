@@ -6,7 +6,7 @@
 ![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg)
 ![VBA](https://img.shields.io/badge/VBA-32bit%20%7C%2064bit-purple.svg)
 ![Dependencies](https://img.shields.io/badge/Dependencies-none%20(mostly)-teal.svg)
-[![Awesome](https://awesome.re/mentioned-badge.svg)](https://github.com/sancarn/awesome-vba)
+[![Awesome VBA](https://awesome.re/mentioned-badge.svg)](https://github.com/sancarn/awesome-vba)
 
 vbaXray is a single-class VBA module for reading VBA source code straight out of Office files - Excel, Word, PowerPoint, Publisher, Outlook, and Access - without opening them.
 
