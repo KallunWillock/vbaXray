@@ -21,7 +21,7 @@ Depending on the file type, vbaXray then:
 3. For legacy PowerPoint (`.ppt`), scans the `PowerPoint Document` stream for `VbaProjectStg` records. These are sometimes raw CFB, sometimes zlib-compressed — the compressed ones get wrapped in a gzip shell and fed through `archiveint.dll` because PowerPoint's DEFLATE payloads end with a sync flush rather than a conventional terminator, which is a delightful thing to discover empirically (I'm lying...)
 4. For Access (`.accdb`, `.mdb`), there is no `vbaProject.bin` at all. Access shreds the VBA across LVAL database pages. vbaXray walks the pages, follows the row chains, decompresses each candidate blob, and keeps whatever comes out looking module-ish. The only reason I know any of this is thanks to WilliamSmithEdward's pyOpenVBA, which is a fantastic resource for anyone ~~unhinged enough~~ interested in Access internals.
 5. Once the VBA storage is open, reads the `VBA/dir` stream and decompresses it using the MS-OVBA LZ77 variant (see MS-OVBA 2.4.1).
-6. Parses the `dir` stream records to extract each module's name, stream name, and compressed-source offset, along with the project's library references.
+6. Parses the `dir` stream records to extract each module's name, stream name, and compressed-source offset, along with the project's library references (except for Access).
 7. Reads the `PROJECT` stream (plain text) to refine module types — standard, class, document, designer.
 8. For each module, reads the corresponding VBA stream, slices from the stored offset, and decompresses the source.
 
@@ -92,12 +92,6 @@ There are two different meanings of "supported" used here: one is the truth, and
 | **Raw** | `vbaProject.bin` | Implemented | Tested |
 
 `.accde` and `.mde` will not work - you're forgiven for thinking that this is just me being lazy, but it appears that Access strips the source when it compiles those, leaving only p-code, so there is nothing there to recover. 
-
-## A 'quick' note about Access
-
-(Almost) Every other Office application stores its VBA the same 'civilised' way: a compound document called `vbaProject.bin`, sitting either as a file inside the OOXML zip or as a storage inside the old binary format. Point any OLE parser at it and the modules are right there. Access does not do this. Access takes the VBA project, chops it into pieces, and stores those pieces as rows in hidden system tables. There is no `vbaProject.bin` to find. 
-
-vbaXray takes the other route. It scans the database for LVAL pages, follows the row chains to reassemble anything that spans pages, decompresses each candidate blob, and keeps whatever comes out looking like a module. No system tables, no catalog parsing, no reassembling a synthetic compound document to feed to a parser that expects one. If it decompresses into something that starts `Attribute VB_Name = `, it's a module.
 
 > [!IMPORTANT]
 > As ever, any bugs, blunders, oversights, and general acts of coding inelegance are entirely my own. Any sparks of coding brilliance very likely belong to other people.
@@ -185,6 +179,17 @@ Classes get the `VERSION 1.0 CLASS` etc bolted onto the start of module, because
 
 * **No Visio support.** Frankly, I've never used Visio, and while I did try to add support, I ended up removing the Visio-specific extraction path because it just did not work on the singe Visio file I had available. But I'm an adorable and naively trusting sort-of-person, so if you have a few non-malware-riddled Visio files that you would be happy to share or can otherwise direct me to, please get in touch.
 
+
+## A 'quick' note about Access
+
+(Almost) Every other Office application stores its VBA the same 'civilised' way: a compound document called `vbaProject.bin`, sitting either as a file inside the OOXML zip or as a storage inside the old binary format. Point any OLE parser at it and the modules are right there. Access does not do this. Access takes the VBA project, chops it into pieces, and stores those pieces as rows in hidden system tables. There is no `vbaProject.bin` to find. 
+
+vbaXray takes the other route. It scans the database for LVAL pages, follows the row chains to reassemble anything that spans pages, decompresses each candidate blob, and keeps whatever comes out looking like a module. No system tables, no catalog parsing, no reassembling a synthetic compound document to feed to a parser that expects one. If it decompresses into something that starts `Attribute VB_Name = `, it's a module.
+
+## Changes in 2.2
+
+* Various bug fixes and improvements, including better handling of exports from Access files.
+
 ## Changes in 2.1
 
 * **FRX export.** `ExportAll` now writes valid `.frx` files alongside `.frm` source for UserForm modules. The binary data is extracted and wrapped with the correct FRX header (including userform dimensions), and the `.frm` gets a synthesized header so it re-imports into the VBE. `ExtractFormFRX` and `ExportFormFRXFromFile` are available for standalone use.
@@ -210,11 +215,9 @@ Version 1.0 reads OOXML files via `Shell.Application` and not much else. Version
 
 There are a few things I'd quite like to investigate, although none of them should be taken as any assurance that I have any idea what I'm doing.
 
-* **Older MDB format.**
+* **Older MDB format.** Partial improvements in v2.2.
 * **Embedded files and OLE objects.** The storage tree already exposes where these things live; actually extracting and/or following them is another job (mostly complete).
 * **Writing/editing.** Eventually I'd like to see whether a VBA project can be modified and successfully written back into its container.
-* ~~**Project references.** The `dir` stream contains them; vbaXray currently doesn't expose them.~~
-* ~~**FRX extraction.** The `.frm` source comes out, but the accompanying binary `.frx` data does not.~~
 
 ---
 
@@ -239,11 +242,6 @@ vbaXray was created by Kallun Willock (me).
 * Cristian Buse - Excel-ZipTools: <https://github.com/cristianbuse/excel-ziptools>
 
 ---
-
-## Changelog
-
-* **2.0** - Extended the original engine: OOXML via ZipFldr IStorage, legacy compound files, legacy PowerPoint, Access, and diagnostic tools.
-* **1.0** - Initial public release. OOXML only, via `Shell.Application`.
 
 ## License
 

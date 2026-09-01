@@ -10,7 +10,7 @@ Attribute VB_Exposed = False
 Attribute VB_Description = "A tool to extract VBA code from Office files"
 
 '  |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-'  |||||||||||||||||||||||||||    vbaXray (v2.1)    ||||||||||||||||||||||||||||||
+'  |||||||||||||||||||||||||||    vbaXray (v2.2)    ||||||||||||||||||||||||||||||
 '  |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 '
 '  AUTHOR:   Kallun Willock
@@ -25,10 +25,12 @@ Attribute VB_Description = "A tool to extract VBA code from Office files"
 '            2.1    30/08/2026    - Added support to export valid (importable) FRX files;
 '                                 - Added Project Reference extraction;
 '                                 - Various bug fixes and optimisations.
+'            2.2    01/09/2026    Bug fixes to improve exporting modules/classes from
+'                                 Access databases.
 
 Option Explicit
 
-Private Const VBAXRAY_VERSION           As Single = 2.1
+Private Const VBAXRAY_VERSION           As Single = 2.2
 
 #If Win64 Then
   Private Const PTR_SIZE As Long = 8
@@ -421,6 +423,13 @@ Public Property Get ReferenceFilePath(ByVal index As Long) As String
     SetError "[ReferenceFilePath] Index out of range": Exit Property
   End If
   ReferenceFilePath = m_Project.References(index).FilePath
+End Property
+
+Public Property Get ReferenceType(ByVal index As Long) As String
+  If index < 1 Or index > m_Project.ReferenceCount Then
+    SetError "[ReferenceType] Index out of range": Exit Property
+  End If
+  ReferenceType = m_Project.References(index).RefType
 End Property
 
 Public Function LoadFromFile(ByVal FilePath As String) As Boolean
@@ -2122,6 +2131,10 @@ Private Function DecompressStream(ByRef CompressedData() As Byte, Optional ByVal
   Exit Function
 
 ErrHandler:
+  If outPos > 0 Then
+    ReDim Preserve output(0 To outPos - 1)
+    DecompressStream = output
+  End If
   If Not Silent Then
     SetError "[DecompressStream] Invalid or truncated compressed stream"
   End If
@@ -2193,12 +2206,6 @@ Private Function HasCompoundFileSignatureAt(ByRef data() As Byte, ByVal pos As L
       data(pos + 2) = &H11 And data(pos + 3) = &HE0 And _
       data(pos + 4) = &HA1 And data(pos + 5) = &HB1 And _
       data(pos + 6) = &H1A And data(pos + 7) = &HE1
-End Function
-
-Private Function ByteCount(ByRef data() As Byte) As Long
-  On Error Resume Next
-  If UBound(data) < LBound(data) Then Exit Function
-  ByteCount = UBound(data) - LBound(data) + 1
 End Function
 
 Private Function ReadUInt16LE(ByRef data() As Byte, ByVal pos As Long) As Long
@@ -2383,7 +2390,9 @@ Private Sub ParseAccessDB(ByRef data() As Byte)
     base = p * m_AccessPageSize
     If base + (m_AccessPageSize - 1) > UBound(data) Then Exit For
 
-    If data(base) = &H1 And data(base + 4) = &H4C And data(base + 5) = &H56 And data(base + 6) = &H41 And data(base + 7) = &H4C Then
+'    If data(base) = &H1 And data(base + 4) = &H4C And data(base + 5) = &H56 And data(base + 6) = &H41 And data(base + 7) = &H4C Then
+    If data(base) = &H1 Then
+      LogMessage xrayDebug, "[ParseAccessDB] scanning page " & p
       ParseLVALPage data, p
     End If
   Next
@@ -2443,6 +2452,7 @@ Private Sub ProcessAccessLVALRow(ByRef data() As Byte, ByVal p As Long, ByVal sl
     If rowBytes(i) = &H1 Then
       hdr = CLng(rowBytes(i + 1)) Or (CLng(rowBytes(i + 2)) * 256&)
       If ((hdr \ m_AccessPageSize) And 7) = 3 Then
+        LogMessage xrayDebug, "[ProcessAccessLVALRow] candidate at page " & p & " slot " & slot & " offset " & i
         TryDecompressAccessBlob SliceBytes(rowBytes, i, rowLength - i)
       End If
     End If
@@ -2643,16 +2653,17 @@ Private Sub ExtractAccessModule(ByRef decomp() As Byte)
   Next
   If isClass Then m_Project.Modules(newCount).ModType = modClass
 
-  Dim bodyLines() As String
-  If bodyStart <= UBound(lines) Then
-    Dim j As Long: j = 0
-    ReDim bodyLines(0 To UBound(lines) - bodyStart)
-    For i = bodyStart To UBound(lines)
-      bodyLines(j) = lines(i)
-      j = j + 1
-    Next
-    m_Project.Modules(newCount).SourceCode = Join(bodyLines, vbCrLf)
-  End If
+'  Dim bodyLines() As String
+'  If bodyStart <= UBound(lines) Then
+'    Dim j As Long: j = 0
+'    ReDim bodyLines(0 To UBound(lines) - bodyStart)
+'    For i = bodyStart To UBound(lines)
+'      bodyLines(j) = lines(i)
+'      j = j + 1
+'    Next
+'    m_Project.Modules(newCount).SourceCode = Join(bodyLines, vbCrLf)
+'  End If
+  m_Project.Modules(newCount).SourceCode = Join(lines, vbCrLf)
 End Sub
 
 Private Sub LogMessage(ByVal level As XrayLogLevel, ByVal msg As String)
