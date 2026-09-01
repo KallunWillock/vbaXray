@@ -186,6 +186,10 @@ Classes get the `VERSION 1.0 CLASS` etc bolted onto the start of module, because
 
 vbaXray takes the other route. It scans the database for LVAL pages, follows the row chains to reassemble anything that spans pages, decompresses each candidate blob, and keeps whatever comes out looking like a module. No system tables, no catalog parsing, no reassembling a synthetic compound document to feed to a parser that expects one. If it decompresses into something that starts `Attribute VB_Name = `, it's a module.
 
+## Changes in 2.3
+
+* Readded missing ByteCount function to the class, which was accidentally removed in 2.2.
+
 ## Changes in 2.2
 
 * Various bug fixes and improvements, including better handling of exports from Access files.
