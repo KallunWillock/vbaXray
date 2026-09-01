@@ -10,7 +10,7 @@ Attribute VB_Exposed = False
 Attribute VB_Description = "A tool to extract VBA code from Office files"
 
 '  |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-'  |||||||||||||||||||||||||||    vbaXray (v2.2)    ||||||||||||||||||||||||||||||
+'  |||||||||||||||||||||||||||    vbaXray (v2.3)    ||||||||||||||||||||||||||||||
 '  |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 '
 '  AUTHOR:   Kallun Willock
@@ -27,10 +27,11 @@ Attribute VB_Description = "A tool to extract VBA code from Office files"
 '                                 - Various bug fixes and optimisations.
 '            2.2    01/09/2026    Bug fixes to improve exporting modules/classes from
 '                                 Access databases.
+'            2.3    01/09/2026    Readded ByteCount function
 
 Option Explicit
 
-Private Const VBAXRAY_VERSION           As Single = 2.2
+Private Const VBAXRAY_VERSION           As Single = 2.3
 
 #If Win64 Then
   Private Const PTR_SIZE As Long = 8
@@ -2390,7 +2391,6 @@ Private Sub ParseAccessDB(ByRef data() As Byte)
     base = p * m_AccessPageSize
     If base + (m_AccessPageSize - 1) > UBound(data) Then Exit For
 
-'    If data(base) = &H1 And data(base + 4) = &H4C And data(base + 5) = &H56 And data(base + 6) = &H41 And data(base + 7) = &H4C Then
     If data(base) = &H1 Then
       LogMessage xrayDebug, "[ParseAccessDB] scanning page " & p
       ParseLVALPage data, p
@@ -2653,16 +2653,6 @@ Private Sub ExtractAccessModule(ByRef decomp() As Byte)
   Next
   If isClass Then m_Project.Modules(newCount).ModType = modClass
 
-'  Dim bodyLines() As String
-'  If bodyStart <= UBound(lines) Then
-'    Dim j As Long: j = 0
-'    ReDim bodyLines(0 To UBound(lines) - bodyStart)
-'    For i = bodyStart To UBound(lines)
-'      bodyLines(j) = lines(i)
-'      j = j + 1
-'    Next
-'    m_Project.Modules(newCount).SourceCode = Join(bodyLines, vbCrLf)
-'  End If
   m_Project.Modules(newCount).SourceCode = Join(lines, vbCrLf)
 End Sub
 
@@ -3090,6 +3080,12 @@ Private Function CleanSourceAttributes(ByVal src As String) As String
   Else
     CleanSourceAttributes = src
   End If
+End Function
+
+Private Function ByteCount(ByRef data() As Byte) As Long
+  On Error Resume Next
+  If UBound(data) < LBound(data) Then Exit Function
+  ByteCount = UBound(data) - LBound(data) + 1
 End Function
 
 #If False Then
